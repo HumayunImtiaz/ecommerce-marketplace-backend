@@ -1,6 +1,8 @@
 import Stripe from "stripe";
 import Order from "../models/order.model";
+import Coupon from "../models/coupon.model";
 import { z } from "zod";
+import mongoose from "mongoose";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
@@ -48,6 +50,8 @@ const createOrderSchema = z.object({
   total: z.number().min(0),
   paymentMethod: z.enum(["stripe", "cod"]),
   stripePaymentIntentId: z.string().optional(),
+  couponCode: z.string().optional(),
+  discountAmount: z.number().optional().default(0),
 });
 
 // Create Stripe Payment Intent 
@@ -119,6 +123,8 @@ export const createOrderService = async (
       shippingCost: data.shippingCost,
       total: data.total,
       paymentMethod: data.paymentMethod,
+      couponCode: data.couponCode,
+      discountAmount: data.discountAmount,
       paymentStatus: "pending",
       orderStatus: "pending",
     });
@@ -140,6 +146,21 @@ export const createOrderService = async (
     }
 
     await order.save();
+
+    // Update Coupon usage if applied
+    if (data.couponCode) {
+      const coupon = await Coupon.findOne({ code: data.couponCode.toUpperCase() });
+      if (coupon) {
+        coupon.usedCount += 1;
+        const userUsageIndex = coupon.usedBy.findIndex(u => u.userId.toString() === userId);
+        if (userUsageIndex > -1) {
+          coupon.usedBy[userUsageIndex].count += 1;
+        } else {
+          coupon.usedBy.push({ userId: new mongoose.Types.ObjectId(userId) as any, count: 1 });
+        }
+        await coupon.save();
+      }
+    }
 
     return {
       success: true,

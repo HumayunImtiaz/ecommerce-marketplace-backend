@@ -9,6 +9,7 @@ import {
   getUserOrdersForAdmin,
   confirmOrderPayment,
 } from "../controllers/order.controller";
+import * as CouponController from "../controllers/coupon.controller";
 import { authenticateUser, authenticateAdmin } from "../../../middlewares/auth.middleware";
 
 const router = Router();
@@ -36,5 +37,12 @@ router.get("/user/:userId", authenticateAdmin, getUserOrdersForAdmin);
 
 // POST /api/auth/orders/:orderId/confirm-payment — User confirms Stripe payment
 router.post("/:orderId/confirm-payment", authenticateUser, confirmOrderPayment);
+
+// ─── Coupon Routes (User) ───────────────────────────────────────────────────
+// POST /api/auth/orders/coupons/validate — User validates coupon at checkout
+router.post("/coupons/validate", authenticateUser, CouponController.validateCoupon);
+
+// GET /api/auth/orders/coupons/public — Public coupons for homepage
+router.get("/coupons/public", CouponController.getPublicCoupons);
 
 export default router;

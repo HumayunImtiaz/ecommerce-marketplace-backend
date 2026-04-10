@@ -33,6 +33,8 @@ export interface IOrder {
   paymentStatus: "pending" | "paid" | "failed";
   stripePaymentIntentId?: string;
   orderStatus: "pending" | "processing" | "shipped" | "delivered" | "cancelled";
+  couponCode?: string;
+  discountAmount?: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -91,6 +93,8 @@ const orderSchema = new Schema<IOrder, OrderModel>(
       enum: ["pending", "processing", "shipped", "delivered", "cancelled"],
       default: "pending",
     },
+    couponCode:     { type: String },
+    discountAmount: { type: Number, default: 0 },
   },
   { timestamps: true, versionKey: false }
 );
