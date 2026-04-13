@@ -1,5 +1,6 @@
 import Subscriber from "../models/subscriber.model";
 import mailTransporter from "../../../config/mail";
+import User from "../../user/models/user.model";
 
 type ServiceResponse<T = unknown> = {
   success: boolean;
@@ -124,6 +125,26 @@ export const notifySubscribersService = async (product: any): Promise<void> => {
       return;
     }
 
+    // --- Filter subscribers based on registered User preferences ---
+    // Get all users who have opted OUT of promotional emails
+    const optedOutUsers = await User.find({
+      "emailPreferences.promotionalEmails": false
+    }).select("email");
+    
+    const optedOutEmails = new Set(optedOutUsers.map(u => u.email.toLowerCase()));
+    
+    // Filter the subscriber list
+    const filteredSubscribers = subscribers.filter(s => !optedOutEmails.has(s.email.toLowerCase()));
+
+    if (filteredSubscribers.length === 0) {
+      console.log("All subscribers have opted out or no subscribers left after filtering.");
+      return;
+    }
+
+    const finalSubscribers = filteredSubscribers;
+    console.log(`Newsletter will be sent to ${finalSubscribers.length} out of ${subscribers.length} active subscribers (filtered by user preferences).`);
+
+
     const clientUrl = (process.env.CLIENT_URL || "http://localhost:3000").replace(/\/$/, "");
     const serverUrl = (process.env.SERVER_URL || "http://localhost:5000").replace(/\/$/, "");
 
@@ -212,8 +233,8 @@ export const notifySubscribersService = async (product: any): Promise<void> => {
 
     // Send emails in batches of 10
     const batchSize = 10;
-    for (let i = 0; i < subscribers.length; i += batchSize) {
-      const batch = subscribers.slice(i, i + batchSize);
+    for (let i = 0; i < finalSubscribers.length; i += batchSize) {
+      const batch = finalSubscribers.slice(i, i + batchSize);
       const emailPromises = batch.map((subscriber) => {
         const personalizedHtml = htmlTemplate.replace(
           /__EMAIL__/g,
@@ -241,7 +262,7 @@ export const notifySubscribersService = async (product: any): Promise<void> => {
     }
 
     console.log(
-      `Newsletter sent to ${subscribers.length} subscriber(s) for product: ${product.name}`
+      `Newsletter sent to ${finalSubscribers.length} subscriber(s) for product: ${product.name}`
     );
   } catch (error: any) {
     console.error("notifySubscribersService error:", error.message);

@@ -7,10 +7,15 @@ import {
   resendVerificationEmail,
   socialLogin,
   verifyEmail,
+  requestAccountDeletion,
+  getEmailPreferences,
+  updateEmailPreferences,
+  updateUserProfile,
 } from "../controllers/user.auth.controller";
 import {
   checkLocalProviderBeforeLogin,
   checkUserVerifiedBeforeLogin,
+  authenticateUser,
 } from "../../../middlewares/auth.middleware";
 import { storageData } from "../../../utils/multer";
 
@@ -38,5 +43,12 @@ router.post(
 router.post("/forgot-password", forgotPassword);
 
 router.post("/reset-password/:token", resetPassword);
+
+router.post("/request-deletion", authenticateUser, requestAccountDeletion);
+
+router.get("/email-preferences", authenticateUser, getEmailPreferences);
+router.patch("/email-preferences", authenticateUser, updateEmailPreferences);
+
+router.patch("/profile", authenticateUser, storageData("uploads").single("avatar"), updateUserProfile);
 
 export default router;

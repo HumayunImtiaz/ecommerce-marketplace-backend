@@ -7,9 +7,12 @@ export interface IUser {
   password?: string;
   avatar: string | null;
   bio: string | null;
+  phone: string | null;
+  dateOfBirth: string | null;
   role: "user" | "admin";
   isVerified: boolean;
   isDeleted: boolean;
+  deletionRequested: boolean;
   deletedAt: Date | null;
   deletedBy: string | null;
   provider: "local" | "google" | "facebook";
@@ -19,6 +22,11 @@ export interface IUser {
   resetPasswordExpires: Date | null;
   emailVerificationToken: string | null;
   emailVerificationExpires: Date | null;
+  emailPreferences: {
+    orderUpdates: boolean;
+    promotionalEmails: boolean;
+    productRecommendations: boolean;
+  };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -56,6 +64,14 @@ const userSchema = new Schema<IUser, UserModel, IUserMethods>(
       type: String,
       default: null,
     },
+    phone: {
+      type: String,
+      default: null,
+    },
+    dateOfBirth: {
+      type: String,
+      default: null,
+    },
     role: {
       type: String,
       enum: ["user", "admin"],
@@ -66,6 +82,10 @@ const userSchema = new Schema<IUser, UserModel, IUserMethods>(
       default: false,
     },
     isDeleted: {
+      type: Boolean,
+      default: false,
+    },
+    deletionRequested: {
       type: Boolean,
       default: false,
     },
@@ -105,6 +125,11 @@ const userSchema = new Schema<IUser, UserModel, IUserMethods>(
     resetPasswordExpires: {
       type: Date,
       default: null,
+    },
+    emailPreferences: {
+      orderUpdates: { type: Boolean, default: true },
+      promotionalEmails: { type: Boolean, default: true },
+      productRecommendations: { type: Boolean, default: false },
     },
   },
   {

@@ -1,6 +1,8 @@
 import Contact, { IContact } from "../models/contact.model";
 import SiteSettings from "../../admin/models/site-settings.model";
 import mailTransporter from "../../../config/mail";
+import Notification from "../../notification/models/notification.model";
+import { getIO } from "../../../socket";
 
 const createInquiry = async (data: Partial<IContact>) => {
   const inquiry = await Contact.create(data);
@@ -51,6 +53,20 @@ const createInquiry = async (data: Partial<IContact>) => {
   } catch (error) {
     console.error("Failed to send contact inquiry email:", error);
     // We don't throw here to avoid failing the whole request if email fails
+  }
+
+  // Create Notification for Admin
+  const notification = await Notification.create({
+    title: "New Customer Inquiry",
+    message: `${data.name} sent a new message regarding ${data.subject}`,
+    type: "info",
+    relatedId: inquiry._id.toString(),
+    relatedModel: "Contact",
+  });
+
+  const io = getIO();
+  if (io) {
+    io.to("admin_room").emit("new_notification", notification);
   }
 
   return inquiry;
