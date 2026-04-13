@@ -5,6 +5,8 @@ import generateVerificationToken from "../../../utils/token";
 import verifyGoogleToken from "../../../utils/google";
 import User from "../models/user.model";
 import { verifyFacebookToken } from "../../../utils/facebook";
+import Notification from "../../notification/models/notification.model";
+import { getIO } from "../../../socket";
 import { ROLE } from "../../../utils/enums/role";
 import { userAuthValidation } from "../validations/user.auth.validation";
 
@@ -139,6 +141,17 @@ const registerUserService = async (
     });
 
     await user.save();
+
+    const notification = await Notification.create({
+      title: "New User Registration",
+      message: `${user.fullName} (${user.email}) just created an account.`,
+      type: "info",
+      relatedId: user._id.toString(),
+      relatedModel: "User",
+    });
+    
+    const io = getIO();
+    if (io) io.to("admin_room").emit("new_notification", notification);
 
     const emailResponse = await sendVerificationEmail(
       user.email,
@@ -511,6 +524,17 @@ const socialLoginService = async (
       });
 
       await user.save();
+
+      const notification = await Notification.create({
+        title: "New User Login",
+        message: `${socialUser.fullName} (${socialUser.email}) just registered via ${provider}.`,
+        type: "info",
+        relatedId: user._id.toString(),
+        relatedModel: "User",
+      });
+      
+      const io = getIO();
+      if (io) io.to("admin_room").emit("new_notification", notification);
     }
 
     const authToken = generateToken({
@@ -724,6 +748,154 @@ const resetPasswordService = async (
   }
 };
 
+const requestAccountDeletionService = async (
+  userId: string
+): Promise<ServiceResponse<null>> => {
+  try {
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return {
+        success: false,
+        statusCode: 404,
+        message: "User not found",
+        data: null,
+        errors: [{ field: "userId", message: "User not found" }],
+      };
+    }
+
+    if (user.deletionRequested) {
+      return {
+        success: false,
+        statusCode: 400,
+        message: "Deletion already requested",
+        data: null,
+        errors: [{ field: "account", message: "Account deletion already requested" }],
+      };
+    }
+
+    user.deletionRequested = true;
+    await user.save();
+
+    const notification = await Notification.create({
+      title: "Account Deletion Requested",
+      message: `${user.fullName} (${user.email}) requested to delete their account.`,
+      type: "error", // Use error/warning color
+      relatedId: user._id.toString(),
+      relatedModel: "User",
+    });
+
+    const io = getIO();
+    if (io) io.to("admin_room").emit("new_notification", notification);
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Account deletion requested successfully. Pending admin approval.",
+      data: null,
+    };
+  } catch (error: any) {
+    console.error("requestAccountDeletionService error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: `Failed to request account deletion: ${error.message || "unknown error"}`,
+      data: null,
+    };
+  }
+};
+
+const getEmailPreferencesService = async (
+  userId: string
+): Promise<ServiceResponse> => {
+  try {
+    const user = await User.findById(userId).select("emailPreferences");
+    if (!user) {
+      return { success: false, statusCode: 404, message: "User not found", data: null };
+    }
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Email preferences fetched",
+      data: user.emailPreferences || {
+        orderUpdates: true,
+        promotionalEmails: true,
+        productRecommendations: false,
+      },
+    };
+  } catch (error: any) {
+    return { success: false, statusCode: 500, message: `Failed: ${error.message}`, data: null };
+  }
+};
+
+const updateEmailPreferencesService = async (
+  userId: string,
+  prefs: { orderUpdates?: boolean; promotionalEmails?: boolean; productRecommendations?: boolean }
+): Promise<ServiceResponse> => {
+  try {
+    const user = await User.findById(userId);
+    if (!user) {
+      return { success: false, statusCode: 404, message: "User not found", data: null };
+    }
+
+    if (prefs.orderUpdates !== undefined) user.emailPreferences.orderUpdates = prefs.orderUpdates;
+    if (prefs.promotionalEmails !== undefined) user.emailPreferences.promotionalEmails = prefs.promotionalEmails;
+    if (prefs.productRecommendations !== undefined) user.emailPreferences.productRecommendations = prefs.productRecommendations;
+
+    await user.save();
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Email preferences updated",
+      data: user.emailPreferences,
+    };
+  } catch (error: any) {
+    return { success: false, statusCode: 500, message: `Failed: ${error.message}`, data: null };
+  }
+};
+
+const updateUserProfileService = async (userId: string, body: any): Promise<ServiceResponse<any>> => {
+  try {
+    const user = await User.findById(userId);
+    if (!user) return { success: false, statusCode: 404, message: "User not found", data: null };
+
+    // Email check if changed
+    if (body.email && body.email !== user.email) {
+      const existing = await User.findOne({ email: body.email, _id: { $ne: userId } });
+      if (existing) {
+        return { success: false, statusCode: 409, message: "Email is already taken", data: null, errors: [{ field: "email", message: "Email is already taken" }] };
+      }
+      user.email = body.email;
+    }
+
+    if (body.fullName) user.fullName = body.fullName;
+    if (body.bio !== undefined) user.bio = body.bio;
+    if (body.phone !== undefined) user.phone = body.phone;
+    if (body.dateOfBirth !== undefined) user.dateOfBirth = body.dateOfBirth;
+    if (body.avatar !== undefined) user.avatar = body.avatar;
+
+    await user.save();
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Profile updated successfully",
+      data: {
+        id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        avatar: user.avatar,
+        bio: user.bio,
+        phone: user.phone,
+        dateOfBirth: user.dateOfBirth,
+      },
+    };
+  } catch (error: any) {
+    return { success: false, statusCode: 500, message: `Failed to update profile: ${error.message}`, data: null };
+  }
+};
+
 export {
   registerUserService,
   verifyEmailService,
@@ -732,4 +904,8 @@ export {
   socialLoginService,
   forgotPasswordService,
   resetPasswordService,
+  requestAccountDeletionService,
+  getEmailPreferencesService,
+  updateEmailPreferencesService,
+  updateUserProfileService,
 };

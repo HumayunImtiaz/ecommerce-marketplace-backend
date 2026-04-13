@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import Stripe from "stripe";
 import nodemailer from "nodemailer";
 import Order from "../models/order.model";
+import Subscriber from "../../newsletter/models/subscriber.model";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string);
 
@@ -83,8 +84,28 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
 
 
         const order = orderId
-          ? await Order.findById(orderId).populate<{ userId: { email: string; fullName: string } }>("userId", "email fullName")
-          : await Order.findOne({ stripePaymentIntentId: paymentIntent.id }).populate<{ userId: { email: string; fullName: string } }>("userId", "email fullName");
+          ? await Order.findById(orderId).populate<{ 
+              userId: { 
+                email: string; 
+                fullName: string; 
+                emailPreferences: { 
+                  orderUpdates: boolean;
+                  promotionalEmails: boolean;
+                  productRecommendations: boolean;
+                } 
+              } 
+            }>("userId", "email fullName emailPreferences")
+          : await Order.findOne({ stripePaymentIntentId: paymentIntent.id }).populate<{ 
+              userId: { 
+                email: string; 
+                fullName: string; 
+                emailPreferences: { 
+                  orderUpdates: boolean;
+                  promotionalEmails: boolean;
+                  productRecommendations: boolean;
+                } 
+              } 
+            }>("userId", "email fullName emailPreferences");
 
         if (!order) {
           console.error(` No order found for orderId=${orderId} / intentId=${paymentIntent.id}`);
@@ -99,12 +120,23 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
         console.log(` Order ${order.orderNumber} → paid & processing`);
 
         if (order.userId?.email) {
-          await sendOrderConfirmationEmail(
-            order.userId.email,
-            order.userId.fullName,
-            order.orderNumber,
-            amountPaid
-          );
+          // Check if user is an active subscriber in the footer form
+          const isSubscribed = await Subscriber.findOne({ email: order.userId.email.toLowerCase(), isActive: true });
+          
+          // Check user preference for order updates
+          const preferenceEnabled = order.userId.emailPreferences?.orderUpdates !== false;
+
+          if (isSubscribed && preferenceEnabled) {
+            await sendOrderConfirmationEmail(
+              order.userId.email,
+              order.userId.fullName,
+              order.orderNumber,
+              amountPaid
+            );
+          } else {
+            const reason = !isSubscribed ? "NOT SUBSCRIBED via footer" : "preference DISABLED in settings";
+            console.log(`✉️  Order confirmation email SKIPPED for ${order.userId.email} because: ${reason}`);
+          }
         } else {
           console.warn("  No email found on order userId — skipping email");
         }

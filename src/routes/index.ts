@@ -13,6 +13,7 @@ import settingsRoutes from "../modules/admin/routes/settings.routes";
 import newsletterRoutes from "../modules/newsletter/routes/newsletter.route";
 import contactRoutes from "../modules/contact/routes/contact.route";
 import messageRoutes from "../modules/message/routes/message.route";
+import notificationRoutes from "../modules/notification/routes/notification.route";
 
 const router = Router();
 
@@ -38,6 +39,7 @@ router.use("/settings", settingsRoutes);
 router.use("/newsletter", newsletterRoutes);
 router.use("/contact", contactRoutes);
 router.use("/messages", messageRoutes);
+router.use("/notifications", notificationRoutes);
 
 router.get("/config/stripe", (req: Request, res: Response) => {
   return sendResponse(res, {

@@ -2,6 +2,8 @@ import { Server as SocketIOServer, Socket } from "socket.io";
 import { Server as HTTPServer } from "http";
 import Message from "./modules/message/models/message.model";
 
+let ioInstance: SocketIOServer | null = null;
+
 export function setupSocketIO(httpServer: HTTPServer) {
   const allowedOrigins = [
     process.env.CLIENT_URL,
@@ -14,6 +16,8 @@ export function setupSocketIO(httpServer: HTTPServer) {
       credentials: true,
     },
   });
+
+  ioInstance = io;
 
   io.on("connection", (socket: Socket) => {
     console.log(`Socket connected: ${socket.id}`);
@@ -76,4 +80,8 @@ export function setupSocketIO(httpServer: HTTPServer) {
   });
 
   return io;
+}
+
+export function getIO() {
+  return ioInstance;
 }

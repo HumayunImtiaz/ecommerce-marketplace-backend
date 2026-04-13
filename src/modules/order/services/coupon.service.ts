@@ -1,12 +1,48 @@
 import Coupon from "../models/coupon.model";
 import mongoose from "mongoose";
+import Stripe from "stripe";
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
 export const createCouponService = async (couponData: any) => {
+  let stripeCouponId: string | null = null;
+
   try {
-    const coupon = new Coupon(couponData);
+    // 1. Build Stripe coupon params
+    const stripeParams: Stripe.CouponCreateParams = {
+      id: couponData.code.toUpperCase(),
+      name: couponData.code.toUpperCase(),
+      max_redemptions: couponData.usageLimit || undefined,
+      redeem_by: couponData.expiryDate
+        ? Math.floor(new Date(couponData.expiryDate).getTime() / 1000)
+        : undefined,
+    };
+
+    if (couponData.discountType === "percentage") {
+      stripeParams.percent_off = couponData.discountValue;
+    } else {
+      stripeParams.amount_off = Math.round(couponData.discountValue * 100); // cents
+      stripeParams.currency = "usd";
+    }
+
+    // 2. Create in Stripe first (so we can rollback if it fails)
+    const stripeCoupon = await stripe.coupons.create(stripeParams);
+    stripeCouponId = stripeCoupon.id;
+
+    // 3. Now save to MongoDB
+    const coupon = new Coupon({ ...couponData, stripeCouponId });
     await coupon.save();
-    return { statusCode: 201, success: true, message: "Coupon created successfully", data: coupon };
+
+    return { statusCode: 201, success: true, message: "Coupon created and synced to Stripe successfully", data: coupon };
   } catch (error: any) {
+    // Rollback Stripe coupon if MongoDB save fails
+    if (stripeCouponId) {
+      try {
+        await stripe.coupons.del(stripeCouponId);
+      } catch (rollbackErr) {
+        console.error("Failed to rollback Stripe coupon:", rollbackErr);
+      }
+    }
     return { statusCode: 500, success: false, message: error.message || "Failed to create coupon", data: null };
   }
 };
@@ -22,8 +58,25 @@ export const getCouponsService = async () => {
 
 export const deleteCouponService = async (couponId: string) => {
   try {
+    const coupon = await Coupon.findById(couponId);
+    if (!coupon) {
+      return { statusCode: 404, success: false, message: "Coupon not found", data: null };
+    }
+
+    // Delete from Stripe (use the code as the Stripe coupon ID)
+    try {
+      await stripe.coupons.del(coupon.code.toUpperCase());
+    } catch (stripeError: any) {
+      // If it's not found in Stripe, that's fine — just log it
+      if (stripeError?.code !== "resource_missing") {
+        console.error("Stripe coupon deletion failed:", stripeError.message);
+      }
+    }
+
+    // Delete from MongoDB
     await Coupon.findByIdAndDelete(couponId);
-    return { statusCode: 200, success: true, message: "Coupon deleted successfully", data: null };
+
+    return { statusCode: 200, success: true, message: "Coupon deleted from DB and Stripe successfully", data: null };
   } catch (error: any) {
     return { statusCode: 500, success: false, message: error.message || "Failed to delete coupon", data: null };
   }

@@ -76,7 +76,13 @@ const updateAdminProfile = async (req: Request, res: Response, next: NextFunctio
   try {
     const adminId = String((req as any).authAdmin?._id || "");
     if (!adminId) return res.status(401).json({ success: false, message: "Unauthorized", data: null });
-    const result = await updateAdminProfileService(adminId, req.body);
+    
+    const updateData = { ...req.body };
+    if (req.file) {
+      updateData.avatar = req.file.filename;
+    }
+
+    const result = await updateAdminProfileService(adminId, updateData);
     return res.status(result.statusCode).json({
       success: result.success, message: result.message, data: result.data,
       ...(result.errors && { errors: result.errors }),

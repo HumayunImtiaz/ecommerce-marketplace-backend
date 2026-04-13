@@ -75,7 +75,7 @@ const adminLoginService = async (body: any): Promise<ServiceResponse<{
 const getAllUsersService = async (): Promise<ServiceResponse> => {
   try {
     const users = await User.find({ role: ROLE.USER })
-      .select("fullName email avatar role isVerified isDeleted deletedAt deletedBy provider createdAt updatedAt")
+      .select("fullName email avatar role isVerified isDeleted deletionRequested deletedAt deletedBy provider createdAt updatedAt")
       .sort({ createdAt: -1 });
 
     return {
@@ -85,6 +85,7 @@ const getAllUsersService = async (): Promise<ServiceResponse> => {
       data: users.map((u: any) => ({
         id: u._id, fullName: u.fullName, email: u.email, avatar: u.avatar,
         role: u.role, isVerified: u.isVerified, isDeleted: u.isDeleted,
+        deletionRequested: u.deletionRequested,
         deletedAt: u.deletedAt, deletedBy: u.deletedBy, provider: u.provider,
         createdAt: u.createdAt, updatedAt: u.updatedAt,
       })),
@@ -162,7 +163,7 @@ const changeAdminPasswordService = async (adminId: string, body: any): Promise<S
 
 
 const updateAdminProfileService = async (adminId: string, body: any): Promise<ServiceResponse<{
-  id: unknown; fullName: string; email: string; bio: string | null; lastLogin: Date | null;
+  id: unknown; fullName: string; email: string; bio: string | null; lastLogin: Date | null; avatar: string | null;
 }>> => {
   try {
     const validation = updateProfileSchema.safeParse(body);
@@ -184,6 +185,7 @@ const updateAdminProfileService = async (adminId: string, body: any): Promise<Se
     if (validData.fullName !== undefined) admin.fullName = validData.fullName;
     if (validData.email !== undefined) admin.email = validData.email;
     if (validData.bio !== undefined) admin.bio = validData.bio ?? null;
+    if (body.avatar !== undefined) admin.avatar = body.avatar;
 
     await admin.save();
 
@@ -191,7 +193,7 @@ const updateAdminProfileService = async (adminId: string, body: any): Promise<Se
       success: true,
       statusCode: 200,
       message: "Profile updated successfully",
-      data: { id: admin._id, fullName: admin.fullName, email: admin.email, bio: admin.bio, lastLogin: admin.lastLogin },
+      data: { id: admin._id, fullName: admin.fullName, email: admin.email, bio: admin.bio, lastLogin: admin.lastLogin, avatar: admin.avatar },
     };
   } catch (error: any) {
     console.error("updateAdminProfileService error:", error);
@@ -245,7 +247,7 @@ const getUserByIdService = async (userId: string): Promise<ServiceResponse> => {
     if (!userId?.trim()) return { success: false, statusCode: 400, message: "User ID is required", data: null };
 
     const user = await User.findOne({ _id: userId, role: ROLE.USER })
-      .select("fullName email avatar role isVerified isDeleted deletedAt deletedBy provider lastLogin createdAt updatedAt");
+      .select("fullName email avatar role isVerified isDeleted deletionRequested deletedAt deletedBy provider lastLogin createdAt updatedAt");
     
     if (!user) return { success: false, statusCode: 404, message: `User with ID "${userId}" not found`, data: null };
 
@@ -256,6 +258,7 @@ const getUserByIdService = async (userId: string): Promise<ServiceResponse> => {
       data: {
         id: user._id, fullName: user.fullName, email: user.email, avatar: user.avatar,
         role: user.role, isVerified: user.isVerified, isDeleted: user.isDeleted,
+        deletionRequested: user.deletionRequested,
         deletedAt: user.deletedAt, deletedBy: user.deletedBy, provider: user.provider,
         lastLogin: user.lastLogin, createdAt: user.createdAt, updatedAt: user.updatedAt,
       },

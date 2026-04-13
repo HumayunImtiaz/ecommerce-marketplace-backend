@@ -1,8 +1,15 @@
 import Stripe from "stripe";
 import Order from "../models/order.model";
 import Coupon from "../models/coupon.model";
+import Notification from "../../notification/models/notification.model";
+import Product from "../../product/models/product.model";
+import Variant from "../../product/models/variant.model";
+import Stock from "../../product/models/stock.model";
+import { getIO } from "../../../socket";
 import { z } from "zod";
 import mongoose from "mongoose";
+import Subscriber from "../../newsletter/models/subscriber.model";
+import mailTransporter from "../../../config/mail";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
@@ -54,19 +61,25 @@ const createOrderSchema = z.object({
   discountAmount: z.number().optional().default(0),
 });
 
-// Create Stripe Payment Intent 
+// Create Stripe Payment Intent
 export const createPaymentIntentService = async (
-  amount: number
+  amount: number,
+  couponCode?: string
 ): Promise<ServiceResponse<{ clientSecret: string }>> => {
   try {
     if (!amount || amount <= 0) {
       return { success: false, statusCode: 400, message: "Invalid amount", data: null };
     }
 
+    const metadata: Record<string, string> = {}
+    if (couponCode) metadata.couponCode = couponCode.toUpperCase()
+
     const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(amount * 100), // cents mein
+      amount: Math.round(amount * 100),
       currency: "usd",
       automatic_payment_methods: { enabled: true },
+      metadata,
+      description: couponCode ? `Coupon applied: ${couponCode.toUpperCase()}` : undefined,
     });
 
     return {
@@ -138,7 +151,9 @@ export const createOrderService = async (
         automatic_payment_methods: { enabled: true },
         metadata: {
           orderId: order._id.toString(),
+          ...(data.couponCode ? { couponCode: data.couponCode.toUpperCase(), originalSubtotal: data.subtotal.toString(), discountAmount: (data.discountAmount || 0).toString() } : {})
         },
+        description: data.couponCode ? `Order with coupon: ${data.couponCode.toUpperCase()}` : undefined,
       });
 
       order.stripePaymentIntentId = paymentIntent.id;
@@ -160,6 +175,59 @@ export const createOrderService = async (
         }
         await coupon.save();
       }
+    }
+
+    // Deduct stock and check low stock threshold
+    for (const item of data.items) {
+      let variantQuery: any = { productId: item.productId };
+      if (item.selectedColor) variantQuery.color = item.selectedColor;
+      if (item.selectedSize) variantQuery.size = item.selectedSize;
+
+      let variant = await Variant.findOne(variantQuery);
+      if (!variant && item.selectedColor) {
+        variant = await Variant.findOne({ productId: item.productId, color: item.selectedColor });
+      }
+      if (!variant) {
+        variant = await Variant.findOne({ productId: item.productId });
+      }
+
+      if (variant) {
+        const stock = await Stock.findOne({ variantId: variant._id });
+        if (stock) {
+          stock.quantity = Math.max(0, stock.quantity - item.quantity);
+          await stock.save();
+
+          // Low Stock Notification
+          if (stock.quantity <= stock.lowStockThreshold) {
+            const product = await Product.findById(item.productId);
+            const variantDetails = [item.selectedColor, item.selectedSize].filter(Boolean).join(" - ");
+            const notification = await Notification.create({
+              title: "Low Stock Alert",
+              message: `Product "${product?.name || item.name}" ${variantDetails ? `(${variantDetails})` : ""} is low on stock (${stock.quantity} left).`,
+              type: "warning",
+              relatedId: product?.slug || item.productId.toString(),
+              relatedModel: "Product",
+            });
+            
+            const io = getIO();
+            if (io) io.to("admin_room").emit("new_notification", notification);
+          }
+        }
+      }
+    }
+
+    // Create Notification for Admin
+    const notification = await Notification.create({
+      title: "New Order",
+      message: `Order ${order.orderNumber} placed.`,
+      type: "success",
+      relatedId: order._id.toString(),
+      relatedModel: "Order",
+    });
+
+    const io = getIO();
+    if (io) {
+      io.to("admin_room").emit("new_notification", notification);
     }
 
     return {
@@ -253,7 +321,17 @@ export const updateOrderStatusService = async (
   status: string
 ): Promise<ServiceResponse> => {
   try {
-    const order = await Order.findById(orderId);
+    const order = await Order.findById(orderId).populate<{ 
+      userId: { 
+        email: string; 
+        fullName: string; 
+        emailPreferences: { 
+          orderUpdates: boolean;
+          promotionalEmails: boolean;
+          productRecommendations: boolean;
+        } 
+      } 
+    }>("userId", "email fullName emailPreferences");
     if (!order) {
       return { success: false, statusCode: 404, message: "Order not found", data: null };
     }
@@ -267,6 +345,22 @@ export const updateOrderStatusService = async (
 
     await order.save();
 
+    // --- Send Email Notification if prerequisites are met ---
+    if (order.userId?.email) {
+      const isSubscribed = await Subscriber.findOne({ email: order.userId.email.toLowerCase(), isActive: true });
+      const prefs = order.userId.emailPreferences;
+
+      // 1. Order Status Email (Already implemented)
+      if (isSubscribed && prefs?.orderUpdates !== false) {
+        await sendOrderStatusUpdateEmail(order.userId.email, order.userId.fullName, order.orderNumber, status);
+      }
+
+      // 2. Product Recommendations (New: Trigger on delivery)
+      if (status.toLowerCase() === "delivered" && isSubscribed && prefs?.productRecommendations === true) {
+        await sendProductRecommendationsEmail(order);
+      }
+    }
+
     return {
       success: true,
       statusCode: 200,
@@ -275,6 +369,124 @@ export const updateOrderStatusService = async (
     };
   } catch (error: any) {
     return { success: false, statusCode: 500, message: `Failed to update status: ${error.message}`, data: null };
+  }
+};
+
+const sendOrderStatusUpdateEmail = async (
+  email: string,
+  fullName: string,
+  orderNumber: string,
+  status: string
+) => {
+  try {
+    const statusLabels: Record<string, string> = {
+      processing: "is now being processed",
+      shipped: "has been shipped",
+      delivered: "has been delivered",
+      cancelled: "has been cancelled",
+    };
+
+    const statusMessage = statusLabels[status.toLowerCase()] || `status has been updated to ${status}`;
+
+    await mailTransporter.sendMail({
+      from: process.env.MAIL_FROM || `"Ecommerce" <${process.env.MAIL_USER}>`,
+      to: email,
+      subject: `Order Update: ${orderNumber} - ${status.toUpperCase()}`,
+      html: `
+        <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background-color: #ffffff;">
+          <div style="text-align: center; margin-bottom: 24px;">
+            <h1 style="color: #2563eb; margin: 0; font-size: 24px;">Order Update</h1>
+            <p style="color: #6b7280; font-size: 14px; margin-top: 4px;">Order Number: ${orderNumber}</p>
+          </div>
+          
+          <div style="padding: 24px; background-color: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 24px;">
+            <p style="font-size: 16px; color: #1e293b; margin: 0;">
+              Hello <strong>${fullName}</strong>,
+            </p>
+            <p style="font-size: 16px; color: #334155; line-height: 1.6; margin-top: 12px;">
+              Your order <strong>${orderNumber}</strong> ${statusMessage}.
+            </p>
+          </div>
+          
+          <div style="text-align: center;">
+            <a href="${process.env.CLIENT_URL}/account?tab=orders" style="display: inline-block; background-color: #2563eb; color: #ffffff; text-decoration: none; padding: 12px 32px; border-radius: 8px; font-weight: 600; font-size: 14px;">
+              View Order History
+            </a>
+          </div>
+          
+          <p style="color: #94a3b8; font-size: 12px; text-align: center; margin-top: 32px;">
+            Thank you for shopping with us!<br/>
+            If you did not expect this email, please ignore it.
+          </p>
+        </div>
+      `,
+    });
+    console.log(`✉️  Order status (${status}) email sent to ${email}`);
+  } catch (err: any) {
+    console.error(`Email sending FAILED to ${email}:`, err.message);
+  }
+};
+
+const sendProductRecommendationsEmail = async (order: any) => {
+  try {
+    const purchasedProductIds = order.items.map((item: any) => item.productId.toString());
+    
+    // Get categories from purchased products
+    const purchasedProducts = await Product.find({ _id: { $in: order.items.map((item: any) => item.productId) } });
+    const categoryIds = [...new Set(purchasedProducts.map(p => p.categoryId.toString()))];
+
+    // Find recommended products: same category, active, not the ones just bought
+    const recommendations = await Product.find({
+      categoryId: { $in: categoryIds },
+      _id: { $nin: purchasedProductIds },
+      isActive: true
+    }).limit(4);
+
+    if (recommendations.length === 0) {
+      console.log("No related recommendations found for order:", order.orderNumber);
+      return;
+    }
+
+    const clientUrl = (process.env.CLIENT_URL || "http://localhost:3000").replace(/\/$/, "");
+    const serverUrl = (process.env.SERVER_URL || "http://localhost:5000").replace(/\/$/, "");
+
+    const productsHtml = recommendations.map(p => {
+      const productUrl = `${clientUrl}/products/${p.slug}`;
+      const imageUrl = p.images?.[0]?.startsWith("http") ? p.images[0] : `${serverUrl}/${p.images?.[0]?.replace(/^\/+/, "")}`;
+      
+      return `
+        <div style="flex: 1; min-width: 200px; margin: 10px; padding: 16px; border: 1px solid #f1f5f9; border-radius: 12px; text-align: center;">
+          <img src="${imageUrl}" alt="${p.name}" style="width: 100%; height: 150px; object-fit: cover; border-radius: 8px; margin-bottom: 12px;" />
+          <h4 style="margin: 0; color: #1e293b; font-size: 16px;">${p.name}</h4>
+          <p style="color: #2563eb; font-weight: bold; margin: 8px 0;">$${p.price}</p>
+          <a href="${productUrl}" style="display: inline-block; background-color: #f1f5f9; color: #1e293b; text-decoration: none; padding: 6px 16px; border-radius: 6px; font-size: 12px; font-weight: 500;">View Details</a>
+        </div>
+      `;
+    }).join("");
+
+    await mailTransporter.sendMail({
+      from: process.env.MAIL_FROM || `"Ecommerce" <${process.env.MAIL_USER}>`,
+      to: order.userId.email,
+      subject: `Recommended for you! — Based on your recent order #${order.orderNumber}`,
+      html: `
+        <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: auto; padding: 24px; background-color: #ffffff;">
+          <h2 style="color: #1e293b; text-align: center;">You might also like...</h2>
+          <p style="color: #64748b; text-align: center; margin-bottom: 32px;">We hope you enjoy your recent purchase! Based on what you bought, we thought you might find these interesting:</p>
+          
+          <div style="display: flex; flex-wrap: wrap; justify-content: center;">
+            ${productsHtml}
+          </div>
+          
+          <div style="text-align: center; margin-top: 32px; padding-top: 24px; border-top: 1px solid #f1f5f9;">
+            <p style="color: #94a3b8; font-size: 12px;">You are receiving this because you enabled Product Recommendations in your account.</p>
+          </div>
+        </div>
+      `,
+    });
+
+    console.log(`✉️  Product recommendations email sent to ${order.userId.email}`);
+  } catch (err: any) {
+    console.error("sendProductRecommendationsEmail error:", err.message);
   }
 };
 

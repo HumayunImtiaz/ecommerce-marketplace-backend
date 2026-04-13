@@ -12,6 +12,7 @@ export interface ICoupon extends Document {
   usedBy: { userId: mongoose.Types.ObjectId; count: number }[];
   isPublic: boolean;
   isActive: boolean;
+  stripeCouponId?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -34,6 +35,7 @@ const CouponSchema: Schema = new Schema(
     ],
     isPublic: { type: Boolean, default: false },
     isActive: { type: Boolean, default: true },
+    stripeCouponId: { type: String, default: null },
   },
   { timestamps: true }
 );

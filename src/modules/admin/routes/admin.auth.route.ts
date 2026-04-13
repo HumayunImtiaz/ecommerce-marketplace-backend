@@ -13,6 +13,7 @@ import { getDashboardStats } from "../controllers/dashboard.controller";
 import { getAnalyticsStats } from "../controllers/analytics.controller";
 import * as CouponController from "../../order/controllers/coupon.controller";
 import { authenticateAdmin, authenticateUser } from "../../../middlewares/auth.middleware";
+import { storageData } from "../../../utils/multer";
  
 const router = Router();
  
@@ -38,6 +39,6 @@ router.delete("/users/:userId/permanent-delete", authenticateAdmin, permanentDel
 router.patch("/change-password", authenticateAdmin, changeAdminPassword);
 
 
-router.patch("/profile", authenticateAdmin, updateAdminProfile);
+router.patch("/profile", authenticateAdmin, storageData("uploads").single("avatar"), updateAdminProfile);
 
 export default router;

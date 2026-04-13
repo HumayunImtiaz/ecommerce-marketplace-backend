@@ -1,6 +1,9 @@
 import { Request, Response, NextFunction } from "express";
 import Cart from "../models/cart.model";
 import sendResponse, { createError } from "../../../utils/apiResponse";
+import Product from "../../product/models/product.model";
+import Variant from "../../product/models/variant.model";
+import Stock from "../../product/models/stock.model";
 
 
  //Get current user's cart
@@ -57,6 +60,38 @@ export const addToCart = async (req: Request, res: Response, next: NextFunction)
         item.selectedColor === selectedColor &&
         item.selectedSize === selectedSize
     );
+
+    const currentQtyInCart = existingItemIndex > -1 ? cart.items[existingItemIndex].quantity : 0;
+    const newTotalQty = currentQtyInCart + quantity;
+
+    // Check Stock
+    let variantQuery: any = { productId };
+    if (selectedColor) variantQuery.color = selectedColor;
+    if (selectedSize) variantQuery.size = selectedSize;
+
+    let variant = await Variant.findOne(variantQuery);
+    if (!variant && selectedColor) {
+      variant = await Variant.findOne({ productId, color: selectedColor });
+    }
+    if (!variant) {
+      variant = await Variant.findOne({ productId });
+    }
+
+    if (variant) {
+      const stock = await Stock.findOne({ variantId: variant._id });
+      const availableStock = stock ? stock.quantity : 0;
+
+      if (newTotalQty > availableStock) {
+        return next(
+          createError({
+            statusCode: 400,
+            success: false,
+            message: "stock itna hi prahai abhi",
+            data: null,
+          })
+        );
+      }
+    }
 
     if (existingItemIndex > -1) {
       // Update quantity
@@ -127,6 +162,38 @@ export const updateQuantity = async (req: Request, res: Response, next: NextFunc
           data: null,
         })
       );
+    }
+
+    const item = cart.items[itemIndex] as any;
+
+    if (quantity > 0) {
+      let variantQuery: any = { productId: item.productId };
+      if (item.selectedColor) variantQuery.color = item.selectedColor;
+      if (item.selectedSize) variantQuery.size = item.selectedSize;
+
+      let variant = await Variant.findOne(variantQuery);
+      if (!variant && item.selectedColor) {
+        variant = await Variant.findOne({ productId: item.productId, color: item.selectedColor });
+      }
+      if (!variant) {
+        variant = await Variant.findOne({ productId: item.productId });
+      }
+
+      if (variant) {
+        const stock = await Stock.findOne({ variantId: variant._id });
+        const availableStock = stock ? stock.quantity : 0;
+
+        if (quantity > availableStock) {
+          return next(
+            createError({
+              statusCode: 400,
+              success: false,
+              message: "Not enough stock available.",
+              data: null,
+            })
+          );
+        }
+      }
     }
 
     if (quantity <= 0) {
