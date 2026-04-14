@@ -1,6 +1,7 @@
 import Subscriber from "../models/subscriber.model";
 import mailTransporter from "../../../config/mail";
 import User from "../../user/models/user.model";
+import { notifyAdmin } from "../../../utils/notification.utils";
 
 type ServiceResponse<T = unknown> = {
   success: boolean;
@@ -49,6 +50,14 @@ export const subscribeService = async (
 
     const subscriber = new Subscriber({ email: email.toLowerCase() });
     await subscriber.save();
+
+    // Notify Admin (Marketing category)
+    await notifyAdmin({
+      title: "New Newsletter Subscriber",
+      message: `${email} just joined your waiting list.`,
+      type: "info",
+      category: "marketingNotifications",
+    });
 
     return {
       success: true,

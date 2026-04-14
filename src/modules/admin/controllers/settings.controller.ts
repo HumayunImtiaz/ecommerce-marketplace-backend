@@ -16,7 +16,12 @@ export const getSettings = async (req: Request, res: Response) => {
 
 export const updateSettings = async (req: Request, res: Response) => {
   try {
-    const updatedSettings = await SiteSettings.findOneAndUpdate({}, req.body, {
+    const updateData = { ...req.body };
+    
+    // Explicitly handle nested notifications to avoid partial overwrite issues if needed
+    // In this case, we send the full notifications object from frontend, so simple merge is fine.
+    
+    const updatedSettings = await SiteSettings.findOneAndUpdate({}, updateData, {
       new: true,
       upsert: true,
       runValidators: true,
