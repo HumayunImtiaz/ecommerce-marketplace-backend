@@ -40,6 +40,18 @@ export interface ISiteSettings extends Document {
     quickLinks: { label: string; url: string }[];
     categoryLinks: { label: string; url: string }[];
   };
+  notifications: {
+    emailNotifications: boolean;
+    smsNotifications: boolean;
+    pushNotifications: boolean;
+    orderNotifications: boolean;
+    customerNotifications: boolean;
+    inventoryNotifications: boolean;
+    marketingNotifications: boolean;
+    frequency: string;
+    notificationEmail: string;
+    notificationPhone: string;
+  };
 }
 
 const siteSettingsSchema = new Schema<ISiteSettings>(
@@ -126,6 +138,18 @@ const siteSettingsSchema = new Schema<ISiteSettings>(
           url: { type: String, required: true },
         }
       ],
+    },
+    notifications: {
+      emailNotifications: { type: Boolean, default: true },
+      smsNotifications: { type: Boolean, default: false },
+      pushNotifications: { type: Boolean, default: true },
+      orderNotifications: { type: Boolean, default: true },
+      customerNotifications: { type: Boolean, default: true },
+      inventoryNotifications: { type: Boolean, default: true },
+      marketingNotifications: { type: Boolean, default: false },
+      frequency: { type: String, default: "immediate" },
+      notificationEmail: { type: String, default: "" },
+      notificationPhone: { type: String, default: "" },
     },
   },
   { timestamps: true }

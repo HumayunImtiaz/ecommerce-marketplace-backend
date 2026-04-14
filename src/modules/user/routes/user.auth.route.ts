@@ -18,6 +18,7 @@ import {
   authenticateUser,
 } from "../../../middlewares/auth.middleware";
 import { storageData } from "../../../utils/multer";
+import addressRoutes from "./address.routes";
 
 const router = Router();
 
@@ -50,5 +51,7 @@ router.get("/email-preferences", authenticateUser, getEmailPreferences);
 router.patch("/email-preferences", authenticateUser, updateEmailPreferences);
 
 router.patch("/profile", authenticateUser, storageData("uploads").single("avatar"), updateUserProfile);
+
+router.use("/addresses", addressRoutes);
 
 export default router;

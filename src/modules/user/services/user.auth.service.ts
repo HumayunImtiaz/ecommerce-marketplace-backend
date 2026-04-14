@@ -5,8 +5,7 @@ import generateVerificationToken from "../../../utils/token";
 import verifyGoogleToken from "../../../utils/google";
 import User from "../models/user.model";
 import { verifyFacebookToken } from "../../../utils/facebook";
-import Notification from "../../notification/models/notification.model";
-import { getIO } from "../../../socket";
+import { notifyAdmin } from "../../../utils/notification.utils";
 import { ROLE } from "../../../utils/enums/role";
 import { userAuthValidation } from "../validations/user.auth.validation";
 
@@ -142,16 +141,15 @@ const registerUserService = async (
 
     await user.save();
 
-    const notification = await Notification.create({
+    // Unified Admin Alert (Registration)
+    await notifyAdmin({
       title: "New User Registration",
       message: `${user.fullName} (${user.email}) just created an account.`,
       type: "info",
       relatedId: user._id.toString(),
       relatedModel: "User",
+      category: "customerNotifications",
     });
-    
-    const io = getIO();
-    if (io) io.to("admin_room").emit("new_notification", notification);
 
     const emailResponse = await sendVerificationEmail(
       user.email,
@@ -525,16 +523,15 @@ const socialLoginService = async (
 
       await user.save();
 
-      const notification = await Notification.create({
-        title: "New User Login",
+      // Unified Admin Alert (Social Registration)
+      await notifyAdmin({
+        title: "New User Registration",
         message: `${socialUser.fullName} (${socialUser.email}) just registered via ${provider}.`,
         type: "info",
         relatedId: user._id.toString(),
         relatedModel: "User",
+        category: "customerNotifications",
       });
-      
-      const io = getIO();
-      if (io) io.to("admin_room").emit("new_notification", notification);
     }
 
     const authToken = generateToken({
@@ -777,16 +774,15 @@ const requestAccountDeletionService = async (
     user.deletionRequested = true;
     await user.save();
 
-    const notification = await Notification.create({
+    // Unified Admin Alert (Deletion Request)
+    await notifyAdmin({
       title: "Account Deletion Requested",
       message: `${user.fullName} (${user.email}) requested to delete their account.`,
-      type: "error", // Use error/warning color
+      type: "error",
       relatedId: user._id.toString(),
       relatedModel: "User",
+      category: "customerNotifications",
     });
-
-    const io = getIO();
-    if (io) io.to("admin_room").emit("new_notification", notification);
 
     return {
       success: true,

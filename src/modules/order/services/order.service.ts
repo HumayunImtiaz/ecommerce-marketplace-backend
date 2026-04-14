@@ -1,6 +1,7 @@
 import Stripe from "stripe";
 import Order from "../models/order.model";
 import Coupon from "../models/coupon.model";
+import { syncStripeRedemption } from "./coupon.service";
 import Notification from "../../notification/models/notification.model";
 import Product from "../../product/models/product.model";
 import Variant from "../../product/models/variant.model";
@@ -10,6 +11,7 @@ import { z } from "zod";
 import mongoose from "mongoose";
 import Subscriber from "../../newsletter/models/subscriber.model";
 import mailTransporter from "../../../config/mail";
+import { notifyAdmin } from "../../../utils/notification.utils";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
@@ -174,6 +176,11 @@ export const createOrderService = async (
           coupon.usedBy.push({ userId: new mongoose.Types.ObjectId(userId) as any, count: 1 });
         }
         await coupon.save();
+
+        // Sync redemption count to Stripe (non-blocking, non-fatal)
+        syncStripeRedemption(userId, data.couponCode).catch((e) =>
+          console.error("Stripe redemption sync failed silently:", e.message)
+        );
       }
     }
 
@@ -197,38 +204,33 @@ export const createOrderService = async (
           stock.quantity = Math.max(0, stock.quantity - item.quantity);
           await stock.save();
 
-          // Low Stock Notification
+          // Low Stock Alert (Unified)
           if (stock.quantity <= stock.lowStockThreshold) {
             const product = await Product.findById(item.productId);
             const variantDetails = [item.selectedColor, item.selectedSize].filter(Boolean).join(" - ");
-            const notification = await Notification.create({
+            
+            await notifyAdmin({
               title: "Low Stock Alert",
               message: `Product "${product?.name || item.name}" ${variantDetails ? `(${variantDetails})` : ""} is low on stock (${stock.quantity} left).`,
               type: "warning",
               relatedId: product?.slug || item.productId.toString(),
               relatedModel: "Product",
+              category: "inventoryNotifications",
             });
-            
-            const io = getIO();
-            if (io) io.to("admin_room").emit("new_notification", notification);
           }
         }
       }
     }
 
-    // Create Notification for Admin
-    const notification = await Notification.create({
+    // New Order Alert (Unified)
+    await notifyAdmin({
       title: "New Order",
       message: `Order ${order.orderNumber} placed.`,
       type: "success",
       relatedId: order._id.toString(),
       relatedModel: "Order",
+      category: "orderNotifications",
     });
-
-    const io = getIO();
-    if (io) {
-      io.to("admin_room").emit("new_notification", notification);
-    }
 
     return {
       success: true,
@@ -304,11 +306,11 @@ export const getOrderByIdService = async (orderId: string): Promise<ServiceRespo
     if (!order) {
       return { success: false, statusCode: 404, message: "Order not found", data: null };
     }
-    return { 
-      success: true, 
-      statusCode: 200, 
-      message: "Order fetched", 
-      data: { ...order, id: (order as any)._id?.toString() } 
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Order fetched",
+      data: { ...order, id: (order as any)._id?.toString() }
     };
   } catch (error: any) {
     return { success: false, statusCode: 500, message: `Failed to fetch order: ${error.message}`, data: null };
@@ -321,29 +323,39 @@ export const updateOrderStatusService = async (
   status: string
 ): Promise<ServiceResponse> => {
   try {
-    const order = await Order.findById(orderId).populate<{ 
-      userId: { 
-        email: string; 
-        fullName: string; 
-        emailPreferences: { 
+    const order = await Order.findById(orderId).populate<{
+      userId: {
+        email: string;
+        fullName: string;
+        emailPreferences: {
           orderUpdates: boolean;
           promotionalEmails: boolean;
           productRecommendations: boolean;
-        } 
-      } 
+        }
+      }
     }>("userId", "email fullName emailPreferences");
     if (!order) {
       return { success: false, statusCode: 404, message: "Order not found", data: null };
     }
 
     order.orderStatus = status as any;
-    
+
     // Auto mark as paid if they manually select delivered or mark completed
     if (status === "delivered" && order.paymentMethod === "cod") {
       order.paymentStatus = "paid";
     }
 
     await order.save();
+
+    // Unified Admin Alert (Order Status Update)
+    await notifyAdmin({
+      title: "Order Status Updated",
+      message: `Order ${order.orderNumber} is now ${status.toUpperCase()}.`,
+      type: "info",
+      relatedId: order._id.toString(),
+      relatedModel: "Order",
+      category: "orderNotifications",
+    });
 
     // --- Send Email Notification if prerequisites are met ---
     if (order.userId?.email) {
@@ -430,7 +442,7 @@ const sendOrderStatusUpdateEmail = async (
 const sendProductRecommendationsEmail = async (order: any) => {
   try {
     const purchasedProductIds = order.items.map((item: any) => item.productId.toString());
-    
+
     // Get categories from purchased products
     const purchasedProducts = await Product.find({ _id: { $in: order.items.map((item: any) => item.productId) } });
     const categoryIds = [...new Set(purchasedProducts.map(p => p.categoryId.toString()))];
@@ -453,7 +465,7 @@ const sendProductRecommendationsEmail = async (order: any) => {
     const productsHtml = recommendations.map(p => {
       const productUrl = `${clientUrl}/products/${p.slug}`;
       const imageUrl = p.images?.[0]?.startsWith("http") ? p.images[0] : `${serverUrl}/${p.images?.[0]?.replace(/^\/+/, "")}`;
-      
+
       return `
         <div style="flex: 1; min-width: 200px; margin: 10px; padding: 16px; border: 1px solid #f1f5f9; border-radius: 12px; text-align: center;">
           <img src="${imageUrl}" alt="${p.name}" style="width: 100%; height: 150px; object-fit: cover; border-radius: 8px; margin-bottom: 12px;" />
@@ -484,7 +496,7 @@ const sendProductRecommendationsEmail = async (order: any) => {
       `,
     });
 
-    console.log(`✉️  Product recommendations email sent to ${order.userId.email}`);
+    console.log(` Product recommendations email sent to ${order.userId.email}`);
   } catch (err: any) {
     console.error("sendProductRecommendationsEmail error:", err.message);
   }
@@ -530,7 +542,7 @@ export const confirmOrderPaymentService = async (
     order.stripePaymentIntentId = paymentIntentId;
     await order.save();
 
-    console.log(`✅ Order ${order.orderNumber} confirmed via frontend callback → paid & processing`);
+    console.log(` Order ${order.orderNumber} confirmed via frontend callback → paid & processing`);
 
     return {
       success: true,

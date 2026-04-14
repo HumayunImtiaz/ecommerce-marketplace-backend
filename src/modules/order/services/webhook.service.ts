@@ -46,7 +46,7 @@ const sendOrderConfirmationEmail = async (
         </div>
       `,
     });
-    console.log(`✉️  Confirmation email sent to ${email}`);
+    console.log(` Confirmation email sent to ${email}`);
   } catch (err: any) {
     console.error(` Email sending FAILED to ${email}:`, err.message);
   }
@@ -84,28 +84,28 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
 
 
         const order = orderId
-          ? await Order.findById(orderId).populate<{ 
-              userId: { 
-                email: string; 
-                fullName: string; 
-                emailPreferences: { 
-                  orderUpdates: boolean;
-                  promotionalEmails: boolean;
-                  productRecommendations: boolean;
-                } 
-              } 
-            }>("userId", "email fullName emailPreferences")
-          : await Order.findOne({ stripePaymentIntentId: paymentIntent.id }).populate<{ 
-              userId: { 
-                email: string; 
-                fullName: string; 
-                emailPreferences: { 
-                  orderUpdates: boolean;
-                  promotionalEmails: boolean;
-                  productRecommendations: boolean;
-                } 
-              } 
-            }>("userId", "email fullName emailPreferences");
+          ? await Order.findById(orderId).populate<{
+            userId: {
+              email: string;
+              fullName: string;
+              emailPreferences: {
+                orderUpdates: boolean;
+                promotionalEmails: boolean;
+                productRecommendations: boolean;
+              }
+            }
+          }>("userId", "email fullName emailPreferences")
+          : await Order.findOne({ stripePaymentIntentId: paymentIntent.id }).populate<{
+            userId: {
+              email: string;
+              fullName: string;
+              emailPreferences: {
+                orderUpdates: boolean;
+                promotionalEmails: boolean;
+                productRecommendations: boolean;
+              }
+            }
+          }>("userId", "email fullName emailPreferences");
 
         if (!order) {
           console.error(` No order found for orderId=${orderId} / intentId=${paymentIntent.id}`);
@@ -122,7 +122,7 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
         if (order.userId?.email) {
           // Check if user is an active subscriber in the footer form
           const isSubscribed = await Subscriber.findOne({ email: order.userId.email.toLowerCase(), isActive: true });
-          
+
           // Check user preference for order updates
           const preferenceEnabled = order.userId.emailPreferences?.orderUpdates !== false;
 
@@ -135,7 +135,7 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
             );
           } else {
             const reason = !isSubscribed ? "NOT SUBSCRIBED via footer" : "preference DISABLED in settings";
-            console.log(`✉️  Order confirmation email SKIPPED for ${order.userId.email} because: ${reason}`);
+            console.log(`  Order confirmation email SKIPPED for ${order.userId.email} because: ${reason}`);
           }
         } else {
           console.warn("  No email found on order userId — skipping email");

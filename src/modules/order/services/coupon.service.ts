@@ -1,8 +1,58 @@
 import Coupon from "../models/coupon.model";
+import User from "../../user/models/user.model";
 import mongoose from "mongoose";
 import Stripe from "stripe";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+
+
+export const syncStripeRedemption = async (
+  userId: string,
+  couponCode: string
+): Promise<void> => {
+  try {
+    const user = await User.findById(userId).select("email fullName stripeCustomerId");
+    if (!user) return;
+
+    let stripeCustomerId = user.stripeCustomerId;
+
+
+    if (!stripeCustomerId) {
+      const customer = await stripe.customers.create({
+        email: user.email,
+        name: user.fullName,
+        metadata: { userId: userId.toString() },
+      });
+      stripeCustomerId = customer.id;
+      await User.findByIdAndUpdate(userId, { stripeCustomerId });
+    }
+
+    if (!stripeCustomerId) return;
+
+
+    await stripe.invoiceItems.create({
+      customer: stripeCustomerId,
+      amount: 0,
+      currency: "usd",
+      description: `Coupon redemption tracking: ${couponCode.toUpperCase()}`,
+    });
+
+    const invoice = await stripe.invoices.create({
+      customer: stripeCustomerId,
+      discounts: [{ coupon: couponCode.toUpperCase() }],
+      auto_advance: false,
+    });
+
+    // Finalize then void — this registers the redemption in Stripe
+    await stripe.invoices.finalizeInvoice(invoice.id);
+    await stripe.invoices.voidInvoice(invoice.id);
+
+    console.log(`Stripe redemption synced for coupon ${couponCode.toUpperCase()} (customer: ${stripeCustomerId})`);
+  } catch (err: any) {
+
+    console.error("syncStripeRedemption error:", err.message);
+  }
+};
 
 export const createCouponService = async (couponData: any) => {
   let stripeCouponId: string | null = null;

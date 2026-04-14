@@ -1,6 +1,7 @@
 import { z } from "zod";
 import Review from "../models/review.model";
 import Product from "../../product/models/product.model";
+import { notifyAdmin } from "../../../utils/notification.utils";
 
 type FieldError = { field: string; message: string };
 type ServiceResponse<T = unknown> = {
@@ -119,6 +120,16 @@ export const createReviewService = async (
     });
 
     await review.save();
+
+    // Unified Admin Alert (Review)
+    await notifyAdmin({
+      title: "New Product Review",
+      message: `${userName} just rated "${product.name}" with ${review.rating} stars.`,
+      type: "success",
+      relatedId: product.slug,
+      relatedModel: "Product",
+      category: "customerNotifications",
+    });
 
     // Product ki avg rating update karo
     await recalculateProductRating(productId);

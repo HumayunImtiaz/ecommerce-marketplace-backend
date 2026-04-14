@@ -1,6 +1,19 @@
 import bcrypt from "bcryptjs";
 import { HydratedDocument, Model, Schema, model } from "mongoose";
 
+export interface IAddress {
+  _id?: string;
+  name: string;
+  street: string;
+  city: string;
+  state: string;
+  zipCode: string;
+  country: string;
+  latitude: number;
+  longitude: number;
+  isDefault?: boolean;
+}
+
 export interface IUser {
   fullName: string;
   email: string;
@@ -9,6 +22,7 @@ export interface IUser {
   bio: string | null;
   phone: string | null;
   dateOfBirth: string | null;
+  addresses: IAddress[];
   role: "user" | "admin";
   isVerified: boolean;
   isDeleted: boolean;
@@ -18,6 +32,7 @@ export interface IUser {
   provider: "local" | "google" | "facebook";
   providerId: string | null;
   lastLogin: Date | null;
+  stripeCustomerId: string | null;
   resetPasswordToken: string | null;
   resetPasswordExpires: Date | null;
   emailVerificationToken: string | null;
@@ -72,6 +87,19 @@ const userSchema = new Schema<IUser, UserModel, IUserMethods>(
       type: String,
       default: null,
     },
+    addresses: [
+      {
+        name: { type: String, required: true },
+        street: { type: String, required: true },
+        city: { type: String, required: true },
+        state: { type: String, required: true },
+        zipCode: { type: String, required: true },
+        country: { type: String, required: true },
+        latitude: { type: Number, required: true },
+        longitude: { type: Number, required: true },
+        isDefault: { type: Boolean, default: false },
+      },
+    ],
     role: {
       type: String,
       enum: ["user", "admin"],
@@ -108,6 +136,10 @@ const userSchema = new Schema<IUser, UserModel, IUserMethods>(
     },
     lastLogin: {
       type: Date,
+      default: null,
+    },
+    stripeCustomerId: {
+      type: String,
       default: null,
     },
     emailVerificationToken: {
