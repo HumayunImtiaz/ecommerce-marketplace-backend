@@ -21,7 +21,7 @@ export const createReview = async (req: Request, res: Response, next: NextFuncti
   try {
     const productId = req.params.productId as string;
     const authUser = (req as RequestWithUser).authUser;
-    const userId = String(authUser?._id || "");
+    const userId = String(authUser?.id || "");
     const userName = authUser?.fullName || "Anonymous";
 
     const result = await createReviewService(productId, userId, userName, req.body);

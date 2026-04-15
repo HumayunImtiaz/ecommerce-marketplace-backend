@@ -1,6 +1,6 @@
 import { Server as SocketIOServer, Socket } from "socket.io";
 import { Server as HTTPServer } from "http";
-import Message from "./modules/message/models/message.model";
+import prisma from "./config/prisma";
 
 let ioInstance: SocketIOServer | null = null;
 
@@ -38,13 +38,15 @@ export function setupSocketIO(httpServer: HTTPServer) {
         content: string;
       }) => {
         try {
-          // Save message to database
-          const newMessage = await Message.create({
-            chatId: data.chatId,
-            senderId: data.senderId,
-            senderModel: data.senderModel,
-            content: data.content,
-            isRead: false,
+          // Save message to database via Prisma
+          const newMessage = await prisma.message.create({
+            data: {
+              chatId: data.chatId,
+              senderId: data.senderId,
+              senderModel: data.senderModel,
+              content: data.content,
+              isRead: false,
+            },
           });
 
           // Broadcast to the specific room

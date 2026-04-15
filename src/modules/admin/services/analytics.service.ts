@@ -1,7 +1,4 @@
-import Order from "../../order/models/order.model";
-import User from "../../user/models/user.model";
-import Product from "../../product/models/product.model";
-import Category from "../../product/models/category.model";
+import prisma from "../../../config/prisma";
 
 const getAnalyticsStatsService = async (dateRange: string = "30d", startDate?: string, endDate?: string) => {
   try {
@@ -33,62 +30,74 @@ const getAnalyticsStatsService = async (dateRange: string = "30d", startDate?: s
     const startQuery = start;
     const endQuery = now;
 
+    // ─── Daily Trends ──────────────────────────────────────────────────────────
+    const ordersForTrends = await prisma.order.findMany({
+      where: {
+        createdAt: { gte: startQuery, lte: endQuery },
+        paymentStatus: "paid",
+      },
+      select: {
+        total: true,
+        createdAt: true,
+      },
+    });
+
+    const trendsMap = new Map<string, { revenue: number, orders: number, dateRaw: Date }>();
+    ordersForTrends.forEach(order => {
+      const dateStr = order.createdAt.toLocaleDateString('en-US', { month: 'short', day: '2-digit' });
+      const current = trendsMap.get(dateStr) || { revenue: 0, orders: 0, dateRaw: order.createdAt };
+      current.revenue += order.total;
+      current.orders += 1;
+      trendsMap.set(dateStr, current);
+    });
+
+    const dailyTrends = Array.from(trendsMap.entries())
+      .map(([date, data]) => ({
+        date,
+        revenue: data.revenue,
+        orders: data.orders,
+        visitors: 0,
+        dateRaw: data.dateRaw
+      }))
+      .sort((a, b) => a.dateRaw.getTime() - b.dateRaw.getTime())
+      .map(({ dateRaw, ...rest }) => rest);
 
 
-    const dailyTrends = await Order.aggregate([
-      {
-        $match: {
-          createdAt: { $gte: startQuery, $lte: endQuery },
-          paymentStatus: "paid",
-        },
+    // ─── Revenue Metrics ───────────────────────────────────────────────────────
+    const allOrdersInRange = await prisma.order.findMany({
+      where: {
+        createdAt: { gte: startQuery, lte: endQuery },
       },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%b %d", date: "$createdAt" } },
-          revenue: { $sum: "$total" },
-          orders: { $sum: 1 },
-          dateRaw: { $first: "$createdAt" }
-        },
+      select: {
+        total: true,
+        paymentStatus: true,
+        orderStatus: true,
       },
-      { $sort: { dateRaw: 1 } },
-      {
-        $project: {
-          _id: 0,
-          date: "$_id",
-          revenue: 1,
-          orders: 1,
-          visitors: { $literal: 0 }
-        }
+    });
+
+    let totalRevenue = 0;
+    let orderCount = allOrdersInRange.length;
+    let paidOrderCount = 0;
+    let cancelledCount = 0;
+
+    allOrdersInRange.forEach(order => {
+      if (order.paymentStatus === "paid") {
+        totalRevenue += order.total;
+        paidOrderCount++;
       }
-    ]);
+      if (order.orderStatus === "cancelled") {
+        cancelledCount++;
+      }
+    });
 
-
-    const revenueAgg = await Order.aggregate([
-      {
-        $match: {
-          createdAt: { $gte: startQuery, $lte: endQuery },
-        },
-      },
-      {
-        $group: {
-          _id: null,
-          totalRevenue: { $sum: { $cond: [{ $eq: ["$paymentStatus", "paid"] }, "$total", 0] } },
-          orderCount: { $sum: 1 },
-          paidOrderCount: { $sum: { $cond: [{ $eq: ["$paymentStatus", "paid"] }, 1, 0] } },
-          cancelledCount: { $sum: { $cond: [{ $eq: ["$orderStatus", "cancelled"] }, 1, 0] } },
-        },
-      },
-    ]);
-
-    const revData = revenueAgg[0] || { totalRevenue: 0, orderCount: 0, paidOrderCount: 0, cancelledCount: 0 };
-    const avgOrderValue = revData.paidOrderCount > 0 ? revData.totalRevenue / revData.paidOrderCount : 0;
-    const paymentSuccessRate = revData.orderCount > 0 ? (revData.paidOrderCount / revData.orderCount) * 100 : 0;
-    const refundRate = revData.orderCount > 0 ? (revData.cancelledCount / revData.orderCount) * 100 : 0;
+    const avgOrderValue = paidOrderCount > 0 ? totalRevenue / paidOrderCount : 0;
+    const paymentSuccessRate = orderCount > 0 ? (paidOrderCount / orderCount) * 100 : 0;
+    const refundRate = orderCount > 0 ? (cancelledCount / orderCount) * 100 : 0;
 
     const revenueMetrics = [
       {
         title: "Total Revenue",
-        value: `$${revData.totalRevenue.toLocaleString()}`,
+        value: `$${totalRevenue.toLocaleString()}`,
         change: "+0%",
         trend: "up",
         progress: 100,
@@ -117,16 +126,13 @@ const getAnalyticsStatsService = async (dateRange: string = "30d", startDate?: s
     ];
 
 
-    const customerOrders = await Order.aggregate([
-      { $match: { createdAt: { $gte: startQuery, $lte: endQuery } } },
-      {
-        $group: {
-          _id: "$userId",
-          orderCount: { $sum: 1 },
-          totalValue: { $sum: "$total" },
-        },
-      },
-    ]);
+    // ─── Customer Segments ─────────────────────────────────────────────────────
+    const userOrdersInRange = await prisma.order.groupBy({
+      by: ['userId'],
+      where: { createdAt: { gte: startQuery, lte: endQuery } },
+      _count: { userId: true },
+      _sum: { total: true },
+    });
 
     const segments = {
       New: { count: 0, value: 0, fill: "#10b981" },
@@ -134,16 +140,18 @@ const getAnalyticsStatsService = async (dateRange: string = "30d", startDate?: s
       VIP: { count: 0, value: 0, fill: "#8b5cf6" },
     };
 
-    customerOrders.forEach(cust => {
-      if (cust.orderCount >= 5) {
+    userOrdersInRange.forEach(cust => {
+      const orderCount = cust._count.userId;
+      const totalValue = cust._sum.total || 0;
+      if (orderCount >= 5) {
         segments.VIP.count++;
-        segments.VIP.value += cust.totalValue;
-      } else if (cust.orderCount > 1) {
+        segments.VIP.value += totalValue;
+      } else if (orderCount > 1) {
         segments.Returning.count++;
-        segments.Returning.value += cust.totalValue;
+        segments.Returning.value += totalValue;
       } else {
         segments.New.count++;
-        segments.New.value += cust.totalValue;
+        segments.New.value += totalValue;
       }
     });
 
@@ -153,85 +161,85 @@ const getAnalyticsStatsService = async (dateRange: string = "30d", startDate?: s
     }));
 
 
+    // ─── Acquisition Data (Mocked as in original) ──────────────────────────────
     const acquisitionData = [
-      { channel: "Organic", customers: Math.floor(revData.orderCount * 0.4) },
-      { channel: "Social Media", customers: Math.floor(revData.orderCount * 0.25) },
-      { channel: "Email", customers: Math.floor(revData.orderCount * 0.15) },
-      { channel: "Paid Ads", customers: Math.floor(revData.orderCount * 0.1) },
-      { channel: "Referral", customers: Math.floor(revData.orderCount * 0.1) },
+      { channel: "Organic", customers: Math.floor(orderCount * 0.4) },
+      { channel: "Social Media", customers: Math.floor(orderCount * 0.25) },
+      { channel: "Email", customers: Math.floor(orderCount * 0.15) },
+      { channel: "Paid Ads", customers: Math.floor(orderCount * 0.1) },
+      { channel: "Referral", customers: Math.floor(orderCount * 0.1) },
     ];
 
 
-    const topProductsRaw = await Order.aggregate([
-      { $match: { createdAt: { $gte: startQuery, $lte: endQuery }, paymentStatus: "paid" } },
-      { $unwind: "$items" },
-      {
-        $group: {
-          _id: "$items.productId",
-          sales: { $sum: "$items.quantity" },
-          revenue: { $sum: { $multiply: ["$items.price", "$items.quantity"] } },
-        },
-      },
-      { $sort: { revenue: -1 } },
-      { $limit: 5 },
-      {
-        $lookup: {
-          from: "products",
-          localField: "_id",
-          foreignField: "_id",
-          as: "productInfo"
+    // ─── Top Products ──────────────────────────────────────────────────────────
+    const orderItemsInRange = await prisma.orderItem.findMany({
+      where: {
+        order: {
+          createdAt: { gte: startQuery, lte: endQuery },
+          paymentStatus: "paid",
         }
       },
-      { $unwind: "$productInfo" },
-      {
-        $project: {
-          _id: 0,
-          name: "$productInfo.name",
-          sales: 1,
-          revenue: 1,
-          growth: { $literal: 0 }
-        }
+      select: {
+        productId: true,
+        name: true,
+        quantity: true,
+        price: true,
       }
-    ]);
+    });
+
+    const productStatsMap = new Map<string, { name: string, sales: number, revenue: number }>();
+    orderItemsInRange.forEach(item => {
+      const current = productStatsMap.get(item.productId) || { name: item.name, sales: 0, revenue: 0 };
+      current.sales += item.quantity;
+      current.revenue += item.price * item.quantity;
+      productStatsMap.set(item.productId, current);
+    });
+
+    const topProducts = Array.from(productStatsMap.values())
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 5)
+      .map(p => ({
+        name: p.name,
+        sales: p.sales,
+        revenue: p.revenue,
+        growth: 0
+      }));
 
 
-    const categoryAgg = await Order.aggregate([
-      { $match: { createdAt: { $gte: startQuery, $lte: endQuery }, paymentStatus: "paid" } },
-      { $unwind: "$items" },
-      {
-        $lookup: {
-          from: "products",
-          localField: "items.productId",
-          foreignField: "_id",
-          as: "product"
+    // ─── Category Performance ──────────────────────────────────────────────────
+    const categoryStatsInRange = await prisma.orderItem.findMany({
+      where: {
+        order: {
+          createdAt: { gte: startQuery, lte: endQuery },
+          paymentStatus: "paid",
         }
       },
-      { $unwind: "$product" },
-      {
-        $group: {
-          _id: "$product.category",
-          sales: { $sum: "$items.quantity" },
-        }
-      },
-      {
-        $lookup: {
-          from: "categories",
-          localField: "_id",
-          foreignField: "_id",
-          as: "categoryInfo"
-        }
-      },
-      { $unwind: "$categoryInfo" },
-      {
-        $project: {
-          _id: 0,
-          category: "$categoryInfo.name",
-          sales: 1,
-          target: { $literal: 100 },
-          performance: { $literal: 80 }
+      select: {
+        quantity: true,
+        product: {
+          select: {
+            category: {
+              select: {
+                name: true
+              }
+            }
+          }
         }
       }
-    ]);
+    });
+
+    const categoryMap = new Map<string, number>();
+    categoryStatsInRange.forEach(item => {
+      const catName = item.product?.category?.name || "Uncategorized";
+      categoryMap.set(catName, (categoryMap.get(catName) || 0) + item.quantity);
+    });
+
+    const categoryPerformance = Array.from(categoryMap.entries()).map(([category, sales]) => ({
+      category,
+      sales,
+      target: 100,
+      performance: 80
+    }));
 
     return {
       statusCode: 200,
@@ -242,8 +250,8 @@ const getAnalyticsStatsService = async (dateRange: string = "30d", startDate?: s
         revenueMetrics,
         customerSegmentData,
         acquisitionData,
-        topProducts: topProductsRaw,
-        categoryPerformance: categoryAgg
+        topProducts,
+        categoryPerformance
       }
     };
 

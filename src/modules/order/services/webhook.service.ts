@@ -1,11 +1,9 @@
 import { Request, Response } from "express";
 import Stripe from "stripe";
 import nodemailer from "nodemailer";
-import Order from "../models/order.model";
-import Subscriber from "../../newsletter/models/subscriber.model";
+import prisma from "../../../config/prisma";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string);
-
 
 const createTransporter = () =>
   nodemailer.createTransport({
@@ -82,60 +80,67 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
 
         console.log(`payment_intent.succeeded — orderId: ${orderId}, intentId: ${paymentIntent.id}`);
 
-
         const order = orderId
-          ? await Order.findById(orderId).populate<{
-            userId: {
-              email: string;
-              fullName: string;
-              emailPreferences: {
-                orderUpdates: boolean;
-                promotionalEmails: boolean;
-                productRecommendations: boolean;
-              }
-            }
-          }>("userId", "email fullName emailPreferences")
-          : await Order.findOne({ stripePaymentIntentId: paymentIntent.id }).populate<{
-            userId: {
-              email: string;
-              fullName: string;
-              emailPreferences: {
-                orderUpdates: boolean;
-                promotionalEmails: boolean;
-                productRecommendations: boolean;
-              }
-            }
-          }>("userId", "email fullName emailPreferences");
+          ? await prisma.order.findUnique({
+              where: { id: orderId },
+              include: {
+                user: {
+                  select: {
+                    email: true,
+                    fullName: true,
+                    prefOrderUpdates: true,
+                  },
+                },
+              },
+            })
+          : await prisma.order.findFirst({
+              where: { stripePaymentIntentId: paymentIntent.id },
+              include: {
+                user: {
+                  select: {
+                    email: true,
+                    fullName: true,
+                    prefOrderUpdates: true,
+                  },
+                },
+              },
+            });
 
         if (!order) {
           console.error(` No order found for orderId=${orderId} / intentId=${paymentIntent.id}`);
           break;
         }
 
-        order.paymentStatus = "paid";
-        order.orderStatus = "processing";
-        order.stripePaymentIntentId = paymentIntent.id;
-        await order.save();
+        await prisma.order.update({
+          where: { id: order.id },
+          data: {
+            paymentStatus: "paid",
+            orderStatus: "processing",
+            stripePaymentIntentId: paymentIntent.id,
+          },
+        });
 
         console.log(` Order ${order.orderNumber} → paid & processing`);
 
-        if (order.userId?.email) {
-          // Check if user is an active subscriber in the footer form
-          const isSubscribed = await Subscriber.findOne({ email: order.userId.email.toLowerCase(), isActive: true });
+        if (order.user?.email) {
+          const isSubscribed = await prisma.subscriber.findFirst({
+            where: { email: order.user.email.toLowerCase(), isActive: true },
+          });
 
-          // Check user preference for order updates
-          const preferenceEnabled = order.userId.emailPreferences?.orderUpdates !== false;
+          const preferenceEnabled = order.user.prefOrderUpdates !== false;
 
           if (isSubscribed && preferenceEnabled) {
             await sendOrderConfirmationEmail(
-              order.userId.email,
-              order.userId.fullName,
+              order.user.email,
+              order.user.fullName,
               order.orderNumber,
               amountPaid
             );
           } else {
-            const reason = !isSubscribed ? "NOT SUBSCRIBED via footer" : "preference DISABLED in settings";
-            console.log(`  Order confirmation email SKIPPED for ${order.userId.email} because: ${reason}`);
+            const reason = !isSubscribed
+              ? "NOT SUBSCRIBED via footer"
+              : "preference DISABLED in settings";
+            console.log(`  Order confirmation email SKIPPED for ${order.user.email} because: ${reason}`);
           }
         } else {
           console.warn("  No email found on order userId — skipping email");
@@ -148,10 +153,21 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
         const orderId = paymentIntent.metadata?.orderId;
 
         if (orderId) {
-          await Order.findByIdAndUpdate(orderId, { paymentStatus: "failed", orderStatus: "cancelled" });
+          await prisma.order.update({
+            where: { id: orderId },
+            data: { paymentStatus: "failed", orderStatus: "cancelled" },
+          });
           console.log(` Order ${orderId} payment failed → cancelled`);
         } else {
-          await Order.findOneAndUpdate({ stripePaymentIntentId: paymentIntent.id }, { paymentStatus: "failed", orderStatus: "cancelled" });
+          const order = await prisma.order.findFirst({
+            where: { stripePaymentIntentId: paymentIntent.id },
+          });
+          if (order) {
+            await prisma.order.update({
+              where: { id: order.id },
+              data: { paymentStatus: "failed", orderStatus: "cancelled" },
+            });
+          }
         }
         break;
       }

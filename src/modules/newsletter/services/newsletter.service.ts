@@ -1,6 +1,5 @@
-import Subscriber from "../models/subscriber.model";
+import prisma from "../../../config/prisma";
 import mailTransporter from "../../../config/mail";
-import User from "../../user/models/user.model";
 import { notifyAdmin } from "../../../utils/notification.utils";
 
 type ServiceResponse<T = unknown> = {
@@ -9,7 +8,6 @@ type ServiceResponse<T = unknown> = {
   message: string;
   data: T | null;
 };
-
 
 export const subscribeService = async (
   email: string
@@ -24,7 +22,8 @@ export const subscribeService = async (
       };
     }
 
-    const existing = await Subscriber.findOne({ email: email.toLowerCase() });
+    const emailLower = email.toLowerCase();
+    const existing = await prisma.subscriber.findUnique({ where: { email: emailLower } });
 
     if (existing) {
       if (existing.isActive) {
@@ -36,25 +35,30 @@ export const subscribeService = async (
         };
       }
       // Re-activate
-      existing.isActive = true;
-      existing.unsubscribedAt = null;
-      existing.subscribedAt = new Date();
-      await existing.save();
+      const updatedSubscriber = await prisma.subscriber.update({
+        where: { id: existing.id },
+        data: {
+          isActive: true,
+          unsubscribedAt: null,
+          subscribedAt: new Date(),
+        },
+      });
       return {
         success: true,
         statusCode: 200,
         message: "Welcome back! You have been re-subscribed successfully",
-        data: existing,
+        data: updatedSubscriber,
       };
     }
 
-    const subscriber = new Subscriber({ email: email.toLowerCase() });
-    await subscriber.save();
+    const subscriber = await prisma.subscriber.create({
+      data: { email: emailLower },
+    });
 
     // Notify Admin (Marketing category)
     await notifyAdmin({
       title: "New Newsletter Subscriber",
-      message: `${email} just joined your waiting list.`,
+      message: `${emailLower} just joined your waiting list.`,
       type: "info",
       category: "marketingNotifications",
     });
@@ -90,8 +94,9 @@ export const unsubscribeService = async (
       };
     }
 
-    const subscriber = await Subscriber.findOne({
-      email: email.toLowerCase(),
+    const emailLower = email.toLowerCase();
+    const subscriber = await prisma.subscriber.findUnique({
+      where: { email: emailLower },
     });
 
     if (!subscriber || !subscriber.isActive) {
@@ -103,9 +108,13 @@ export const unsubscribeService = async (
       };
     }
 
-    subscriber.isActive = false;
-    subscriber.unsubscribedAt = new Date();
-    await subscriber.save();
+    await prisma.subscriber.update({
+      where: { id: subscriber.id },
+      data: {
+        isActive: false,
+        unsubscribedAt: new Date(),
+      },
+    });
 
     return {
       success: true,
@@ -127,7 +136,7 @@ export const unsubscribeService = async (
 // ─── Notify All Active Subscribers ────────────────────────────────────────────
 export const notifySubscribersService = async (product: any): Promise<void> => {
   try {
-    const subscribers = await Subscriber.find({ isActive: true });
+    const subscribers = await prisma.subscriber.findMany({ where: { isActive: true } });
 
     if (subscribers.length === 0) {
       console.log("No active subscribers to notify.");
@@ -135,10 +144,11 @@ export const notifySubscribersService = async (product: any): Promise<void> => {
     }
 
     // --- Filter subscribers based on registered User preferences ---
-    // Get all users who have opted OUT of promotional emails
-    const optedOutUsers = await User.find({
-      "emailPreferences.promotionalEmails": false
-    }).select("email");
+    // In our Prisma schema, these are boolean fields on User: prefPromotionalEmails
+    const optedOutUsers = await prisma.user.findMany({
+      where: { prefPromotionalEmails: false },
+      select: { email: true },
+    });
     
     const optedOutEmails = new Set(optedOutUsers.map(u => u.email.toLowerCase()));
     
@@ -166,13 +176,11 @@ export const notifySubscribersService = async (product: any): Promise<void> => {
       if (img.startsWith("http")) {
         productImage = img;
       } else {
-        // Ensure relative path starts with a single /
         const normalizedImg = img.startsWith("/") ? img : `/${img}`;
         productImage = `${serverUrl}${normalizedImg}`;
       }
     }
 
-    // DEBUG: Log URLs to see exactly what is being sent in the email
     console.log("--- Newsletter Debug ---");
     console.log("Product Name:", product.name);
     console.log("Product Slug:", product.slug);
@@ -196,21 +204,13 @@ export const notifySubscribersService = async (product: any): Promise<void> => {
 </head>
 <body style="margin:0; padding:0; background-color:#f4f4f5; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
   <div style="max-width:600px; margin:0 auto; background-color:#ffffff;">
-    
-    <!-- Header -->
     <div style="background: linear-gradient(135deg, #3b82f6, #8b5cf6); padding: 30px 20px; text-align: center;">
       <h1 style="color:#ffffff; margin:0; font-size:24px;">New Product Alert!</h1>
       <p style="color:#dbeafe; margin:8px 0 0;">Something amazing just dropped</p>
     </div>
-
-    <!-- Product Card -->
     <div style="padding: 30px 20px;">
-    
-      
       <h2 style="color:#1f2937; margin:0 0 10px; font-size:22px;">${product.name}</h2>
-      
       ${product.description ? `<p style="color:#6b7280; margin:0 0 16px; font-size:14px; line-height:1.6;">${product.description.substring(0, 200)}${product.description.length > 200 ? "..." : ""}</p>` : ""}
-      
       <div style="margin: 16px 0;">
         <span style="font-size:28px; font-weight:bold; color:#3b82f6;">$${product.price}</span>
         ${hasDiscount
@@ -219,15 +219,12 @@ export const notifySubscribersService = async (product: any): Promise<void> => {
         : ""
       }
       </div>
-
       <div style="text-align:center; margin-top:24px;">
         <a href="${productUrl}" style="display:inline-block; background:linear-gradient(135deg, #3b82f6, #8b5cf6); color:#ffffff; text-decoration:none; padding:14px 40px; border-radius:10px; font-weight:600; font-size:16px;">
           Shop Now →
         </a>
       </div>
     </div>
-
-    <!-- Footer -->
     <div style="background-color:#f9fafb; padding:20px; text-align:center; border-top:1px solid #e5e7eb;">
       <p style="color:#9ca3af; font-size:12px; margin:0;">
         You received this email because you subscribed to our newsletter.<br/>
@@ -240,7 +237,6 @@ export const notifySubscribersService = async (product: any): Promise<void> => {
 
     const fromAddress = process.env.MAIL_FROM || process.env.MAIL_USER;
 
-    // Send emails in batches of 10
     const batchSize = 10;
     for (let i = 0; i < finalSubscribers.length; i += batchSize) {
       const batch = finalSubscribers.slice(i, i + batchSize);

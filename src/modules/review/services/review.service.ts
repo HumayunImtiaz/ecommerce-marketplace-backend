@@ -1,6 +1,5 @@
 import { z } from "zod";
-import Review from "../models/review.model";
-import Product from "../../product/models/product.model";
+import prisma from "../../../config/prisma";
 import { notifyAdmin } from "../../../utils/notification.utils";
 
 type FieldError = { field: string; message: string };
@@ -17,22 +16,25 @@ const createReviewSchema = z.object({
   comment: z.string().trim().min(5, "Comment must be at least 5 characters"),
 });
 
-// Product ki avg rating recalculate karo 
+// Product ki avg rating recalculate karo
 const recalculateProductRating = async (productId: string): Promise<void> => {
-  const reviews = await Review.find({ productId });
+  const reviews = await prisma.review.findMany({ where: { productId } });
   const reviewCount = reviews.length;
   const avgRating =
     reviewCount > 0
       ? reviews.reduce((sum, r) => sum + r.rating, 0) / reviewCount
       : 0;
 
-  await Product.findByIdAndUpdate(productId, {
-    avgRating: Math.round(avgRating * 10) / 10, // 1 decimal place
-    reviewCount,
+  await prisma.product.update({
+    where: { id: productId },
+    data: {
+      avgRating: Math.round(avgRating * 10) / 10,
+      reviewCount,
+    },
   });
 };
 
-// Get Product Reviews 
+// Get Product Reviews
 export const getProductReviewsService = async (
   productId: string
 ): Promise<ServiceResponse> => {
@@ -41,19 +43,22 @@ export const getProductReviewsService = async (
       return { success: false, statusCode: 400, message: "Product ID is required", data: null };
     }
 
-    const product = await Product.findById(productId);
+    const product = await prisma.product.findUnique({ where: { id: productId } });
     if (!product) {
       return { success: false, statusCode: 404, message: "Product not found", data: null };
     }
 
-    const reviews = await Review.find({ productId }).sort({ createdAt: -1 });
+    const reviews = await prisma.review.findMany({
+      where: { productId },
+      orderBy: { createdAt: "desc" },
+    });
 
     return {
       success: true,
       statusCode: 200,
       message: "Reviews fetched successfully",
       data: reviews.map((r) => ({
-        id: r._id,
+        id: r.id,
         productId: r.productId,
         userId: r.userId,
         userName: r.userName,
@@ -67,7 +72,7 @@ export const getProductReviewsService = async (
   }
 };
 
-//  Create Review
+// Create Review
 export const createReviewService = async (
   productId: string,
   userId: string,
@@ -79,7 +84,7 @@ export const createReviewService = async (
       return { success: false, statusCode: 400, message: "Product ID is required", data: null };
     }
 
-    const product = await Product.findById(productId);
+    const product = await prisma.product.findUnique({ where: { id: productId } });
     if (!product) {
       return { success: false, statusCode: 404, message: "Product not found", data: null };
     }
@@ -100,7 +105,7 @@ export const createReviewService = async (
     }
 
     // Check karo kya user ne already review kiya hai
-    const existingReview = await Review.findOne({ productId, userId });
+    const existingReview = await prisma.review.findFirst({ where: { productId, userId } });
     if (existingReview) {
       return {
         success: false,
@@ -111,15 +116,15 @@ export const createReviewService = async (
       };
     }
 
-    const review = new Review({
-      productId,
-      userId,
-      userName,
-      rating: validation.data.rating,
-      comment: validation.data.comment,
+    const review = await prisma.review.create({
+      data: {
+        productId,
+        userId,
+        userName,
+        rating: validation.data.rating,
+        comment: validation.data.comment,
+      },
     });
-
-    await review.save();
 
     // Unified Admin Alert (Review)
     await notifyAdmin({
@@ -139,7 +144,7 @@ export const createReviewService = async (
       statusCode: 201,
       message: "Review submitted successfully",
       data: {
-        id: review._id,
+        id: review.id,
         productId: review.productId,
         userId: review.userId,
         userName: review.userName,
@@ -149,14 +154,6 @@ export const createReviewService = async (
       },
     };
   } catch (error: any) {
-    if (error.code === 11000) {
-      return {
-        success: false,
-        statusCode: 409,
-        message: "You have already reviewed this product",
-        data: null,
-      };
-    }
     return { success: false, statusCode: 500, message: `Failed to submit review: ${error.message}`, data: null };
   }
 };

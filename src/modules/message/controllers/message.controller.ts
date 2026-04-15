@@ -1,14 +1,14 @@
 import { Request, Response } from "express";
-import Message from "../models/message.model";
-import User from "../../user/models/user.model";
+import prisma from "../../../config/prisma";
 
 // Get messages for a specific chat room (e.g., specific user ID)
 export const getMessagesByChatId = async (req: Request, res: Response) => {
   try {
-    const { chatId } = req.params;
-    const messages = await Message.find({ chatId }).sort({ createdAt: 1 });
-
-
+    const chatId = req.params.chatId as string;
+    const messages = await prisma.message.findMany({
+      where: { chatId },
+      orderBy: { createdAt: "asc" },
+    });
 
     res.status(200).json({ success: true, count: messages.length, data: messages });
   } catch (error: any) {
@@ -16,31 +16,46 @@ export const getMessagesByChatId = async (req: Request, res: Response) => {
   }
 };
 
-
 export const getConversations = async (req: Request, res: Response) => {
   try {
+    // In Prisma, we don't have distinct("chatId") directly on findMany, 
+    // but we can use groupBy or just fetch unique chatId if they are many.
+    // However, the best way to get conversations is to get all messages and group them in JS, 
+    // or use a more specific query. 
+    // Let's get distinct chatIds first.
+    
+    const messages = await prisma.message.findMany({
+      select: { chatId: true },
+      distinct: ['chatId'],
+    });
+    
+    const distinctChatIds = messages.map(m => m.chatId);
 
-    const distinctChatIds = await Message.distinct("chatId");
-
-    const users = await User.find({ _id: { $in: distinctChatIds } }).select("fullName email avatar");
-
+    const users = await prisma.user.findMany({
+      where: { id: { in: distinctChatIds } },
+      select: { id: true, fullName: true, email: true, avatar: true },
+    });
 
     const conversations = await Promise.all(
       users.map(async (user) => {
-        const latestMessage = await Message.findOne({ chatId: user._id.toString() })
-          .sort({ createdAt: -1 })
-          .select("content createdAt isRead senderModel");
+        const latestMessage = await prisma.message.findFirst({
+          where: { chatId: user.id },
+          orderBy: { createdAt: "desc" },
+          select: { content: true, createdAt: true, isRead: true, senderModel: true },
+        });
 
-        const unreadCount = await Message.countDocuments({
-          chatId: user._id.toString(),
-          senderModel: "User",
-          isRead: false
+        const unreadCount = await prisma.message.count({
+          where: {
+            chatId: user.id,
+            senderModel: "User",
+            isRead: false,
+          },
         });
 
         return {
           user,
           latestMessage,
-          unreadCount
+          unreadCount,
         };
       })
     );
@@ -61,15 +76,19 @@ export const getConversations = async (req: Request, res: Response) => {
 // Mark conversation messages as read
 export const markChatAsRead = async (req: Request, res: Response) => {
   try {
-    const { chatId } = req.params;
+    const chatId = req.params.chatId as string;
     const { readerRole } = req.body; // 'Admin' or 'User'
 
     const senderToMark = readerRole === 'Admin' ? 'User' : 'Admin';
 
-    await Message.updateMany(
-      { chatId, senderModel: senderToMark, isRead: false },
-      { $set: { isRead: true } }
-    );
+    await prisma.message.updateMany({
+      where: {
+        chatId,
+        senderModel: senderToMark,
+        isRead: false,
+      },
+      data: { isRead: true },
+    });
 
     res.status(200).json({ success: true, message: "Messages marked as read" });
   } catch (error: any) {

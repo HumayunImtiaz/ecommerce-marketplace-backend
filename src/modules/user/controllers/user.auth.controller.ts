@@ -156,7 +156,7 @@ const requestAccountDeletion = async (
   next: NextFunction
 ) => {
   try {
-    const userId = (req as any).authUser?._id || (req as any).authUser?.id;
+    const userId = (req as any).authUser?.id;
     if (!userId) {
       return res.status(401).json({ success: false, message: "Unauthorized", data: null });
     }
@@ -179,7 +179,7 @@ const getEmailPreferences = async (
   next: NextFunction
 ) => {
   try {
-    const userId = (req as any).authUser?._id || (req as any).authUser?.id;
+    const userId = (req as any).authUser?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized", data: null });
     const result = await getEmailPreferencesService(userId.toString());
     return res.status(result.statusCode).json({ success: result.success, message: result.message, data: result.data });
@@ -192,7 +192,7 @@ const updateEmailPreferences = async (
   next: NextFunction
 ) => {
   try {
-    const userId = (req as any).authUser?._id || (req as any).authUser?.id;
+    const userId = (req as any).authUser?.id;
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized", data: null });
     const result = await updateEmailPreferencesService(userId.toString(), req.body);
     return res.status(result.statusCode).json({ success: result.success, message: result.message, data: result.data });
@@ -205,7 +205,7 @@ const updateUserProfile = async (
   next: NextFunction
 ) => {
   try {
-    const userId = (req as any).authUser?._id || (req as any).authUser?.id;
+    const userId = (req as any).authUser?.id || "";
     if (!userId) return res.status(401).json({ success: false, message: "Unauthorized", data: null });
 
     const updateData = { ...req.body };

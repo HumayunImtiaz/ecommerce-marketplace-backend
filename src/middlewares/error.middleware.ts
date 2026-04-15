@@ -1,6 +1,6 @@
 import { NextFunction, Request, Response } from "express";
 import { ZodError } from "zod";
-import mongoose from "mongoose";
+import { Prisma } from "@prisma/client";
 import sendResponse, { createError, CustomError } from "../utils/apiResponse";
 
 const notFound = (req: Request, res: Response, next: NextFunction): void => {
@@ -47,44 +47,50 @@ const errorHandler = (
     });
   }
 
-  // Mongoose validation errors
-  if (err instanceof mongoose.Error.ValidationError) {
-    const fieldErrors = Object.values(err.errors).map((error: any) => ({
-      field: error.path,
-      message: error.message,
-    }));
+  // Prisma Known Request Errors (e.g., unique constraint, not found)
+  if (err instanceof Prisma.PrismaClientKnownRequestError) {
+    // Unique constraint failed
+    if (err.code === "P2002") {
+      const target = (err.meta?.target as string[]) || [];
+      const field = target[target.length - 1] || "field";
+      
+      return sendResponse(res, {
+        statusCode: 409,
+        success: false,
+        data: null,
+        message: `Duplicate value: This ${field} already exists`,
+        errors: [{ field, message: `Value already exists` }],
+      });
+    }
 
+    // Record not found
+    if (err.code === "P2025") {
+      return sendResponse(res, {
+        statusCode: 404,
+        success: false,
+        data: null,
+        message: err.message || "Record not found",
+      });
+    }
+
+    // Foreign key constraint failed
+    if (err.code === "P2003") {
+      return sendResponse(res, {
+        statusCode: 400,
+        success: false,
+        data: null,
+        message: "Relationship constraint failed: Please check references (IDs)",
+      });
+    }
+  }
+
+  // Prisma Validation Errors
+  if (err instanceof Prisma.PrismaClientValidationError) {
     return sendResponse(res, {
       statusCode: 400,
       success: false,
       data: null,
-      message: `Database validation failed: ${fieldErrors.map((e) => `${e.field} - ${e.message}`).join(", ")}`,
-      errors: fieldErrors,
-    });
-  }
-
-  // Mongoose CastError (invalid ObjectId etc)
-  if (err instanceof mongoose.Error.CastError) {
-    return sendResponse(res, {
-      statusCode: 400,
-      success: false,
-      data: null,
-      message: `Invalid value for ${err.path}: "${err.value}" is not a valid ${err.kind}`,
-      errors: [{ field: err.path, message: `"${err.value}" is not a valid ${err.kind}` }],
-    });
-  }
-
-  // MongoDB duplicate key error
-  if (err.code === 11000) {
-    const duplicateField = Object.keys(err.keyValue || {})[0];
-    const duplicateValue = err.keyValue?.[duplicateField];
-
-    return sendResponse(res, {
-      statusCode: 409,
-      success: false,
-      data: null,
-      message: `Duplicate value: ${duplicateField} "${duplicateValue}" already exists`,
-      errors: [{ field: duplicateField, message: `"${duplicateValue}" already exists` }],
+      message: "Database validation failed: Please check your input",
     });
   }
 

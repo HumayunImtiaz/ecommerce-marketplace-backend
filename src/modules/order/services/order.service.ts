@@ -1,15 +1,8 @@
 import Stripe from "stripe";
-import Order from "../models/order.model";
-import Coupon from "../models/coupon.model";
+import prisma from "../../../config/prisma";
 import { syncStripeRedemption } from "./coupon.service";
-import Notification from "../../notification/models/notification.model";
-import Product from "../../product/models/product.model";
-import Variant from "../../product/models/variant.model";
-import Stock from "../../product/models/stock.model";
 import { getIO } from "../../../socket";
 import { z } from "zod";
-import mongoose from "mongoose";
-import Subscriber from "../../newsletter/models/subscriber.model";
 import mailTransporter from "../../../config/mail";
 import { notifyAdmin } from "../../../utils/notification.utils";
 
@@ -23,7 +16,7 @@ type ServiceResponse<T = unknown> = {
   errors?: { field: string; message: string }[];
 };
 
-// Order number generate 
+// Order number generate
 const generateOrderNumber = (): string => {
   const timestamp = Date.now().toString(36).toUpperCase();
   const random = Math.random().toString(36).substr(2, 5).toUpperCase();
@@ -73,8 +66,8 @@ export const createPaymentIntentService = async (
       return { success: false, statusCode: 400, message: "Invalid amount", data: null };
     }
 
-    const metadata: Record<string, string> = {}
-    if (couponCode) metadata.couponCode = couponCode.toUpperCase()
+    const metadata: Record<string, string> = {};
+    if (couponCode) metadata.couponCode = couponCode.toUpperCase();
 
     const paymentIntent = await stripe.paymentIntents.create({
       amount: Math.round(amount * 100),
@@ -118,33 +111,10 @@ export const createOrderService = async (
     }
 
     const data = validation.data;
+    const orderNumber = generateOrderNumber();
 
-    const order = new Order({
-      userId,
-      orderNumber: generateOrderNumber(),
-      items: data.items.map((item: any) => ({
-        productId: item.productId,
-        name: item.name,
-        image: item.image,
-        price: item.price,
-        quantity: item.quantity,
-        selectedColor: item.selectedColor,
-        selectedSize: item.selectedSize,
-      })),
-      shippingAddress: data.shippingAddress,
-      billingAddress: data.billingAddress,
-      subtotal: data.subtotal,
-      tax: data.tax,
-      shippingCost: data.shippingCost,
-      total: data.total,
-      paymentMethod: data.paymentMethod,
-      couponCode: data.couponCode,
-      discountAmount: data.discountAmount,
-      paymentStatus: "pending",
-      orderStatus: "pending",
-    });
-
-    let clientSecret: string | undefined = undefined;
+    let stripePaymentIntentId: string | undefined;
+    let clientSecret: string | undefined;
 
     if (data.paymentMethod === "stripe") {
       const paymentIntent = await stripe.paymentIntents.create({
@@ -152,30 +122,75 @@ export const createOrderService = async (
         currency: "usd",
         automatic_payment_methods: { enabled: true },
         metadata: {
-          orderId: order._id.toString(),
-          ...(data.couponCode ? { couponCode: data.couponCode.toUpperCase(), originalSubtotal: data.subtotal.toString(), discountAmount: (data.discountAmount || 0).toString() } : {})
+          userId,
+          ...(data.couponCode
+            ? {
+                couponCode: data.couponCode.toUpperCase(),
+                originalSubtotal: data.subtotal.toString(),
+                discountAmount: (data.discountAmount || 0).toString(),
+              }
+            : {}),
         },
-        description: data.couponCode ? `Order with coupon: ${data.couponCode.toUpperCase()}` : undefined,
+        description: data.couponCode
+          ? `Order with coupon: ${data.couponCode.toUpperCase()}`
+          : undefined,
       });
-
-      order.stripePaymentIntentId = paymentIntent.id;
+      stripePaymentIntentId = paymentIntent.id;
       clientSecret = paymentIntent.client_secret || undefined;
     }
 
-    await order.save();
+    // Create order with its items and addresses in a single transaction
+    const order = await prisma.order.create({
+      data: {
+        userId,
+        orderNumber,
+        subtotal: data.subtotal,
+        tax: data.tax,
+        shippingCost: data.shippingCost,
+        total: data.total,
+        paymentMethod: data.paymentMethod,
+        paymentStatus: "pending",
+        orderStatus: "pending",
+        stripePaymentIntentId: stripePaymentIntentId,
+        couponCode: data.couponCode,
+        discountAmount: data.discountAmount || 0,
+        items: {
+          create: data.items.map((item: any) => ({
+            productId: item.productId,
+            name: item.name,
+            image: item.image || "",
+            price: item.price,
+            quantity: item.quantity,
+            selectedColor: item.selectedColor,
+            selectedSize: item.selectedSize,
+          })),
+        },
+        addresses: {
+          create: [
+            { type: "shipping", ...data.shippingAddress },
+            { type: "billing", ...data.billingAddress },
+          ],
+        },
+      },
+    });
 
     // Update Coupon usage if applied
     if (data.couponCode) {
-      const coupon = await Coupon.findOne({ code: data.couponCode.toUpperCase() });
+      const coupon = await prisma.coupon.findFirst({
+        where: { code: data.couponCode.toUpperCase() },
+      });
       if (coupon) {
-        coupon.usedCount += 1;
-        const userUsageIndex = coupon.usedBy.findIndex(u => u.userId.toString() === userId);
-        if (userUsageIndex > -1) {
-          coupon.usedBy[userUsageIndex].count += 1;
-        } else {
-          coupon.usedBy.push({ userId: new mongoose.Types.ObjectId(userId) as any, count: 1 });
-        }
-        await coupon.save();
+        await prisma.coupon.update({
+          where: { id: coupon.id },
+          data: { usedCount: { increment: 1 } },
+        });
+
+        // Upsert user usage record
+        await prisma.couponUsage.upsert({
+          where: { couponId_userId: { couponId: coupon.id, userId } },
+          update: { count: { increment: 1 } },
+          create: { couponId: coupon.id, userId, count: 1 },
+        });
 
         // Sync redemption count to Stripe (non-blocking, non-fatal)
         syncStripeRedemption(userId, data.couponCode).catch((e) =>
@@ -186,34 +201,42 @@ export const createOrderService = async (
 
     // Deduct stock and check low stock threshold
     for (const item of data.items) {
-      let variantQuery: any = { productId: item.productId };
-      if (item.selectedColor) variantQuery.color = item.selectedColor;
-      if (item.selectedSize) variantQuery.size = item.selectedSize;
+      const variantWhere: any = { productId: item.productId };
+      if (item.selectedColor) variantWhere.color = item.selectedColor;
+      if (item.selectedSize) variantWhere.size = item.selectedSize;
 
-      let variant = await Variant.findOne(variantQuery);
+      let variant = await prisma.variant.findFirst({ where: variantWhere });
       if (!variant && item.selectedColor) {
-        variant = await Variant.findOne({ productId: item.productId, color: item.selectedColor });
+        variant = await prisma.variant.findFirst({
+          where: { productId: item.productId, color: item.selectedColor },
+        });
       }
       if (!variant) {
-        variant = await Variant.findOne({ productId: item.productId });
+        variant = await prisma.variant.findFirst({ where: { productId: item.productId } });
       }
 
       if (variant) {
-        const stock = await Stock.findOne({ variantId: variant._id });
+        const stock = await prisma.stock.findFirst({ where: { variantId: variant.id } });
         if (stock) {
-          stock.quantity = Math.max(0, stock.quantity - item.quantity);
-          await stock.save();
+          const newQty = Math.max(0, stock.quantity - item.quantity);
+          let newStatus = "in_stock";
+          if (newQty <= 0) newStatus = "out_of_stock";
+          else if (newQty <= stock.lowStockThreshold) newStatus = "low_stock";
 
-          // Low Stock Alert (Unified)
-          if (stock.quantity <= stock.lowStockThreshold) {
-            const product = await Product.findById(item.productId);
+          await prisma.stock.update({
+            where: { id: stock.id },
+            data: { quantity: newQty, status: newStatus },
+          });
+
+          // Low Stock Alert
+          if (newQty <= stock.lowStockThreshold) {
+            const product = await prisma.product.findUnique({ where: { id: item.productId } });
             const variantDetails = [item.selectedColor, item.selectedSize].filter(Boolean).join(" - ");
-            
             await notifyAdmin({
               title: "Low Stock Alert",
-              message: `Product "${product?.name || item.name}" ${variantDetails ? `(${variantDetails})` : ""} is low on stock (${stock.quantity} left).`,
+              message: `Product "${product?.name || item.name}" ${variantDetails ? `(${variantDetails})` : ""} is low on stock (${newQty} left).`,
               type: "warning",
-              relatedId: product?.slug || item.productId.toString(),
+              relatedId: product?.slug || item.productId,
               relatedModel: "Product",
               category: "inventoryNotifications",
             });
@@ -222,12 +245,12 @@ export const createOrderService = async (
       }
     }
 
-    // New Order Alert (Unified)
+    // New Order Alert
     await notifyAdmin({
       title: "New Order",
       message: `Order ${order.orderNumber} placed.`,
       type: "success",
-      relatedId: order._id.toString(),
+      relatedId: order.id,
       relatedModel: "Order",
       category: "orderNotifications",
     });
@@ -235,11 +258,12 @@ export const createOrderService = async (
     return {
       success: true,
       statusCode: 201,
-      message: data.paymentMethod === "cod"
-        ? "Order placed successfully! Pay on delivery."
-        : "Order placed. Please complete the payment.",
+      message:
+        data.paymentMethod === "cod"
+          ? "Order placed successfully! Pay on delivery."
+          : "Order placed. Please complete the payment.",
       data: {
-        orderId: order._id,
+        orderId: order.id,
         orderNumber: order.orderNumber,
         total: order.total,
         paymentMethod: order.paymentMethod,
@@ -254,19 +278,24 @@ export const createOrderService = async (
   }
 };
 
-//  Get User Orders 
+// Get User Orders
 export const getUserOrdersService = async (
   userId: string
 ): Promise<ServiceResponse> => {
   try {
-    const orders = await Order.find({ userId }).sort({ createdAt: -1 });
+    const orders = await prisma.order.findMany({
+      where: { userId },
+      include: {
+        items: true,
+        addresses: true,
+      },
+      orderBy: { createdAt: "desc" },
+    });
     return {
       success: true,
       statusCode: 200,
       message: "Orders fetched successfully",
-      data: orders.map((o: any) => ({
-        id: o._id, ...o._doc, _id: undefined
-      })),
+      data: orders,
     };
   } catch (error: any) {
     return { success: false, statusCode: 500, message: `Failed to fetch orders: ${error.message}`, data: null };
@@ -276,21 +305,19 @@ export const getUserOrdersService = async (
 // Get All Orders (Admin)
 export const getAllOrdersService = async (): Promise<ServiceResponse> => {
   try {
-    const orders = await Order.find()
-      .populate("userId", "fullName email")
-      .sort({ createdAt: -1 });
+    const orders = await prisma.order.findMany({
+      include: {
+        user: { select: { fullName: true, email: true } },
+        items: true,
+        addresses: true,
+      },
+      orderBy: { createdAt: "desc" },
+    });
     return {
       success: true,
       statusCode: 200,
       message: "All orders fetched successfully",
-      data: orders.map((o: any) => {
-        const orderObj = o.toObject();
-        return {
-          id: o._id.toString(),
-          ...orderObj,
-          _id: undefined
-        };
-      }),
+      data: orders,
     };
   } catch (error: any) {
     return { success: false, statusCode: 500, message: `Failed to fetch all orders: ${error.message}`, data: null };
@@ -300,18 +327,18 @@ export const getAllOrdersService = async (): Promise<ServiceResponse> => {
 // Get Single Order by ID (Admin)
 export const getOrderByIdService = async (orderId: string): Promise<ServiceResponse> => {
   try {
-    const order = await Order.findById(orderId)
-      .populate("userId", "fullName email phone")
-      .lean();
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      include: {
+        user: { select: { fullName: true, email: true, phone: true } },
+        items: true,
+        addresses: true,
+      },
+    });
     if (!order) {
       return { success: false, statusCode: 404, message: "Order not found", data: null };
     }
-    return {
-      success: true,
-      statusCode: 200,
-      message: "Order fetched",
-      data: { ...order, id: (order as any)._id?.toString() }
-    };
+    return { success: true, statusCode: 200, message: "Order fetched", data: order };
   } catch (error: any) {
     return { success: false, statusCode: 500, message: `Failed to fetch order: ${error.message}`, data: null };
   }
@@ -323,52 +350,67 @@ export const updateOrderStatusService = async (
   status: string
 ): Promise<ServiceResponse> => {
   try {
-    const order = await Order.findById(orderId).populate<{
-      userId: {
-        email: string;
-        fullName: string;
-        emailPreferences: {
-          orderUpdates: boolean;
-          promotionalEmails: boolean;
-          productRecommendations: boolean;
-        }
-      }
-    }>("userId", "email fullName emailPreferences");
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      include: {
+        user: {
+          select: {
+            email: true,
+            fullName: true,
+            prefOrderUpdates: true,
+            prefProductRecommendations: true,
+          },
+        },
+        items: true,
+      },
+    });
     if (!order) {
       return { success: false, statusCode: 404, message: "Order not found", data: null };
     }
 
-    order.orderStatus = status as any;
+    const updateData: any = { orderStatus: status };
 
-    // Auto mark as paid if they manually select delivered or mark completed
+    // Auto mark as paid if COD delivered
     if (status === "delivered" && order.paymentMethod === "cod") {
-      order.paymentStatus = "paid";
+      updateData.paymentStatus = "paid";
     }
 
-    await order.save();
+    const updatedOrder = await prisma.order.update({
+      where: { id: orderId },
+      data: updateData,
+    });
 
-    // Unified Admin Alert (Order Status Update)
+    // Admin notification
     await notifyAdmin({
       title: "Order Status Updated",
       message: `Order ${order.orderNumber} is now ${status.toUpperCase()}.`,
       type: "info",
-      relatedId: order._id.toString(),
+      relatedId: order.id,
       relatedModel: "Order",
       category: "orderNotifications",
     });
 
-    // --- Send Email Notification if prerequisites are met ---
-    if (order.userId?.email) {
-      const isSubscribed = await Subscriber.findOne({ email: order.userId.email.toLowerCase(), isActive: true });
-      const prefs = order.userId.emailPreferences;
+    // Send email notification if prerequisites are met
+    if (order.user?.email) {
+      const isSubscribed = await prisma.subscriber.findFirst({
+        where: { email: order.user.email.toLowerCase(), isActive: true },
+      });
 
-      // 1. Order Status Email (Already implemented)
-      if (isSubscribed && prefs?.orderUpdates !== false) {
-        await sendOrderStatusUpdateEmail(order.userId.email, order.userId.fullName, order.orderNumber, status);
+      if (isSubscribed && order.user.prefOrderUpdates !== false) {
+        await sendOrderStatusUpdateEmail(
+          order.user.email,
+          order.user.fullName,
+          order.orderNumber,
+          status
+        );
       }
 
-      // 2. Product Recommendations (New: Trigger on delivery)
-      if (status.toLowerCase() === "delivered" && isSubscribed && prefs?.productRecommendations === true) {
+      // Product recommendations on delivery
+      if (
+        status.toLowerCase() === "delivered" &&
+        isSubscribed &&
+        order.user.prefProductRecommendations === true
+      ) {
         await sendProductRecommendationsEmail(order);
       }
     }
@@ -377,7 +419,7 @@ export const updateOrderStatusService = async (
       success: true,
       statusCode: 200,
       message: "Order status updated successfully",
-      data: { ...order.toObject(), id: order._id.toString() },
+      data: updatedOrder,
     };
   } catch (error: any) {
     return { success: false, statusCode: 500, message: `Failed to update status: ${error.message}`, data: null };
@@ -398,7 +440,8 @@ const sendOrderStatusUpdateEmail = async (
       cancelled: "has been cancelled",
     };
 
-    const statusMessage = statusLabels[status.toLowerCase()] || `status has been updated to ${status}`;
+    const statusMessage =
+      statusLabels[status.toLowerCase()] || `status has been updated to ${status}`;
 
     await mailTransporter.sendMail({
       from: process.env.MAIL_FROM || `"Ecommerce" <${process.env.MAIL_USER}>`,
@@ -410,7 +453,6 @@ const sendOrderStatusUpdateEmail = async (
             <h1 style="color: #2563eb; margin: 0; font-size: 24px;">Order Update</h1>
             <p style="color: #6b7280; font-size: 14px; margin-top: 4px;">Order Number: ${orderNumber}</p>
           </div>
-          
           <div style="padding: 24px; background-color: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 24px;">
             <p style="font-size: 16px; color: #1e293b; margin: 0;">
               Hello <strong>${fullName}</strong>,
@@ -419,13 +461,11 @@ const sendOrderStatusUpdateEmail = async (
               Your order <strong>${orderNumber}</strong> ${statusMessage}.
             </p>
           </div>
-          
           <div style="text-align: center;">
             <a href="${process.env.CLIENT_URL}/account?tab=orders" style="display: inline-block; background-color: #2563eb; color: #ffffff; text-decoration: none; padding: 12px 32px; border-radius: 8px; font-weight: 600; font-size: 14px;">
               View Order History
             </a>
           </div>
-          
           <p style="color: #94a3b8; font-size: 12px; text-align: center; margin-top: 32px;">
             Thank you for shopping with us!<br/>
             If you did not expect this email, please ignore it.
@@ -441,18 +481,24 @@ const sendOrderStatusUpdateEmail = async (
 
 const sendProductRecommendationsEmail = async (order: any) => {
   try {
-    const purchasedProductIds = order.items.map((item: any) => item.productId.toString());
+    const purchasedProductIds = order.items.map((item: any) => item.productId);
 
     // Get categories from purchased products
-    const purchasedProducts = await Product.find({ _id: { $in: order.items.map((item: any) => item.productId) } });
-    const categoryIds = [...new Set(purchasedProducts.map(p => p.categoryId.toString()))];
+    const purchasedProducts = await prisma.product.findMany({
+      where: { id: { in: purchasedProductIds } },
+      select: { categoryId: true },
+    });
+    const categoryIds = [...new Set(purchasedProducts.map((p) => p.categoryId))];
 
     // Find recommended products: same category, active, not the ones just bought
-    const recommendations = await Product.find({
-      categoryId: { $in: categoryIds },
-      _id: { $nin: purchasedProductIds },
-      isActive: true
-    }).limit(4);
+    const recommendations = await prisma.product.findMany({
+      where: {
+        categoryId: { in: categoryIds },
+        id: { notIn: purchasedProductIds },
+        isActive: true,
+      },
+      take: 4,
+    });
 
     if (recommendations.length === 0) {
       console.log("No related recommendations found for order:", order.orderNumber);
@@ -462,11 +508,15 @@ const sendProductRecommendationsEmail = async (order: any) => {
     const clientUrl = (process.env.CLIENT_URL || "http://localhost:3000").replace(/\/$/, "");
     const serverUrl = (process.env.SERVER_URL || "http://localhost:5000").replace(/\/$/, "");
 
-    const productsHtml = recommendations.map(p => {
-      const productUrl = `${clientUrl}/products/${p.slug}`;
-      const imageUrl = p.images?.[0]?.startsWith("http") ? p.images[0] : `${serverUrl}/${p.images?.[0]?.replace(/^\/+/, "")}`;
+    const productsHtml = recommendations
+      .map((p) => {
+        const productUrl = `${clientUrl}/products/${p.slug}`;
+        const imageUrl =
+          p.images?.[0]?.startsWith("http")
+            ? p.images[0]
+            : `${serverUrl}/${p.images?.[0]?.replace(/^\/+/, "")}`;
 
-      return `
+        return `
         <div style="flex: 1; min-width: 200px; margin: 10px; padding: 16px; border: 1px solid #f1f5f9; border-radius: 12px; text-align: center;">
           <img src="${imageUrl}" alt="${p.name}" style="width: 100%; height: 150px; object-fit: cover; border-radius: 8px; margin-bottom: 12px;" />
           <h4 style="margin: 0; color: #1e293b; font-size: 16px;">${p.name}</h4>
@@ -474,21 +524,20 @@ const sendProductRecommendationsEmail = async (order: any) => {
           <a href="${productUrl}" style="display: inline-block; background-color: #f1f5f9; color: #1e293b; text-decoration: none; padding: 6px 16px; border-radius: 6px; font-size: 12px; font-weight: 500;">View Details</a>
         </div>
       `;
-    }).join("");
+      })
+      .join("");
 
     await mailTransporter.sendMail({
       from: process.env.MAIL_FROM || `"Ecommerce" <${process.env.MAIL_USER}>`,
-      to: order.userId.email,
+      to: order.user.email,
       subject: `Recommended for you! — Based on your recent order #${order.orderNumber}`,
       html: `
         <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: auto; padding: 24px; background-color: #ffffff;">
           <h2 style="color: #1e293b; text-align: center;">You might also like...</h2>
           <p style="color: #64748b; text-align: center; margin-bottom: 32px;">We hope you enjoy your recent purchase! Based on what you bought, we thought you might find these interesting:</p>
-          
           <div style="display: flex; flex-wrap: wrap; justify-content: center;">
             ${productsHtml}
           </div>
-          
           <div style="text-align: center; margin-top: 32px; padding-top: 24px; border-top: 1px solid #f1f5f9;">
             <p style="color: #94a3b8; font-size: 12px;">You are receiving this because you enabled Product Recommendations in your account.</p>
           </div>
@@ -496,7 +545,7 @@ const sendProductRecommendationsEmail = async (order: any) => {
       `,
     });
 
-    console.log(` Product recommendations email sent to ${order.userId.email}`);
+    console.log(` Product recommendations email sent to ${order.user.email}`);
   } catch (err: any) {
     console.error("sendProductRecommendationsEmail error:", err.message);
   }
@@ -509,8 +558,7 @@ export const confirmOrderPaymentService = async (
   userId: string
 ): Promise<ServiceResponse> => {
   try {
-    // Find order belonging to this user
-    const order = await Order.findOne({ _id: orderId, userId });
+    const order = await prisma.order.findFirst({ where: { id: orderId, userId } });
     if (!order) {
       return { success: false, statusCode: 404, message: "Order not found", data: null };
     }
@@ -536,19 +584,26 @@ export const confirmOrderPaymentService = async (
       };
     }
 
-    // Update order
-    order.paymentStatus = "paid";
-    order.orderStatus = "processing";
-    order.stripePaymentIntentId = paymentIntentId;
-    await order.save();
+    const updatedOrder = await prisma.order.update({
+      where: { id: orderId },
+      data: {
+        paymentStatus: "paid",
+        orderStatus: "processing",
+        stripePaymentIntentId: paymentIntentId,
+      },
+    });
 
-    console.log(` Order ${order.orderNumber} confirmed via frontend callback → paid & processing`);
+    console.log(` Order ${updatedOrder.orderNumber} confirmed via frontend callback → paid & processing`);
 
     return {
       success: true,
       statusCode: 200,
       message: "Payment confirmed successfully",
-      data: { orderStatus: "processing", paymentStatus: "paid", orderNumber: order.orderNumber },
+      data: {
+        orderStatus: "processing",
+        paymentStatus: "paid",
+        orderNumber: updatedOrder.orderNumber,
+      },
     };
   } catch (error: any) {
     console.error("confirmOrderPaymentService error:", error);

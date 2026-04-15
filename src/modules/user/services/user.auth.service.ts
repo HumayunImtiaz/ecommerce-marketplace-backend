@@ -1,13 +1,14 @@
 import crypto from "crypto";
+import bcrypt from "bcryptjs";
 import mailTransporter from "../../../config/mail";
 import generateToken from "../../../utils/jwt";
 import generateVerificationToken from "../../../utils/token";
 import verifyGoogleToken from "../../../utils/google";
-import User from "../models/user.model";
 import { verifyFacebookToken } from "../../../utils/facebook";
 import { notifyAdmin } from "../../../utils/notification.utils";
 import { ROLE } from "../../../utils/enums/role";
 import { userAuthValidation } from "../validations/user.auth.validation";
+import prisma from "../../../config/prisma";
 
 type FieldError = {
   field: string;
@@ -77,7 +78,6 @@ const registerUserService = async (
   body: any
 ): Promise<ServiceResponse> => {
   try {
-    // --- Validation ---
     const validation = userAuthValidation.registerUserSchema.safeParse(body);
 
     if (!validation.success) {
@@ -98,7 +98,7 @@ const registerUserService = async (
     const { fullName, email, password } = validation.data;
     const avatar = body.avatar || null;
 
-    const existingUser: any = await User.findOne({ email });
+    const existingUser = await prisma.user.findFirst({ where: { email } });
 
     if (existingUser && !existingUser.isVerified) {
       return {
@@ -125,36 +125,33 @@ const registerUserService = async (
       Date.now() + emailVerificationExpiryMinutes * 60 * 1000
     );
 
-    const UserModel: any = User;
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-    const user: any = new UserModel({
-      fullName,
-      email,
-      password,
-      avatar: avatar || null,
-      role: "user",
-      provider: "local",
-      providerId: null,
-      emailVerificationToken: verificationToken,
-      emailVerificationExpires: verificationExpires,
+    const user = await prisma.user.create({
+      data: {
+        fullName,
+        email,
+        password: hashedPassword,
+        avatar: avatar || null,
+        role: "user",
+        provider: "local",
+        providerId: null,
+        emailVerificationToken: verificationToken,
+        emailVerificationExpires: verificationExpires,
+      },
     });
-
-    await user.save();
 
     // Unified Admin Alert (Registration)
     await notifyAdmin({
       title: "New User Registration",
       message: `${user.fullName} (${user.email}) just created an account.`,
       type: "info",
-      relatedId: user._id.toString(),
+      relatedId: user.id.toString(),
       relatedModel: "User",
       category: "customerNotifications",
     });
 
-    const emailResponse = await sendVerificationEmail(
-      user.email,
-      verificationToken
-    );
+    const emailResponse = await sendVerificationEmail(user.email, verificationToken);
 
     if (!emailResponse.success) {
       return {
@@ -171,7 +168,7 @@ const registerUserService = async (
       message: "User registered successfully. Please verify your email.",
       data: {
         user: {
-          id: user._id,
+          id: user.id,
           fullName: user.fullName,
           email: user.email,
           avatar: user.avatar,
@@ -205,8 +202,8 @@ const verifyEmailService = async (
       };
     }
 
-    const user: any = await User.findOne({
-      emailVerificationToken: token,
+    const user = await prisma.user.findFirst({
+      where: { emailVerificationToken: token },
     });
 
     if (!user) {
@@ -229,10 +226,7 @@ const verifyEmailService = async (
       };
     }
 
-    if (
-      !user.emailVerificationExpires ||
-      user.emailVerificationExpires < new Date()
-    ) {
+    if (!user.emailVerificationExpires || user.emailVerificationExpires < new Date()) {
       return {
         success: false,
         statusCode: 400,
@@ -242,11 +236,14 @@ const verifyEmailService = async (
       };
     }
 
-    user.isVerified = true;
-    user.emailVerificationToken = null;
-    user.emailVerificationExpires = null;
-
-    await user.save();
+    const updatedUser = await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        isVerified: true,
+        emailVerificationToken: null,
+        emailVerificationExpires: null,
+      },
+    });
 
     return {
       success: true,
@@ -254,12 +251,12 @@ const verifyEmailService = async (
       message: "Email verified successfully",
       data: {
         user: {
-          id: user._id,
-          fullName: user.fullName,
-          email: user.email,
-          avatar: user.avatar,
-          isVerified: user.isVerified,
-          provider: user.provider,
+          id: updatedUser.id,
+          fullName: updatedUser.fullName,
+          email: updatedUser.email,
+          avatar: updatedUser.avatar,
+          isVerified: updatedUser.isVerified,
+          provider: updatedUser.provider,
         },
       },
     };
@@ -278,7 +275,6 @@ const resendVerificationEmailService = async (
   body: any
 ): Promise<ServiceResponse<null>> => {
   try {
-    // --- Validation ---
     const validation = userAuthValidation.resendVerificationEmailSchema.safeParse(body);
 
     if (!validation.success) {
@@ -298,7 +294,7 @@ const resendVerificationEmailService = async (
 
     const { email } = validation.data;
 
-    const user: any = await User.findOne({ email });
+    const user = await prisma.user.findFirst({ where: { email } });
 
     if (!user) {
       return {
@@ -325,15 +321,15 @@ const resendVerificationEmailService = async (
       Date.now() + emailVerificationExpiryMinutes * 60 * 1000
     );
 
-    user.emailVerificationToken = verificationToken;
-    user.emailVerificationExpires = verificationExpires;
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        emailVerificationToken: verificationToken,
+        emailVerificationExpires: verificationExpires,
+      },
+    });
 
-    await user.save();
-
-    const emailResponse = await sendVerificationEmail(
-      user.email,
-      verificationToken
-    );
+    const emailResponse = await sendVerificationEmail(email, verificationToken);
 
     if (!emailResponse.success) {
       return {
@@ -365,7 +361,6 @@ const loginUserService = async (
   body: any
 ): Promise<ServiceResponse> => {
   try {
-    
     const validation = userAuthValidation.loginUserSchema.safeParse(body);
 
     if (!validation.success) {
@@ -385,7 +380,7 @@ const loginUserService = async (
 
     const { email, password } = validation.data;
 
-    const user: any = await User.findOne({ email }).select("+password");
+    const user = await prisma.user.findFirst({ where: { email } });
 
     if (!user) {
       return {
@@ -397,7 +392,16 @@ const loginUserService = async (
       };
     }
 
-    const isPasswordMatched = await user.comparePassword(password);
+    if (!user.password) {
+      return {
+        success: false,
+        statusCode: 401,
+        message: "This account uses social login. Please login with Google or Facebook.",
+        data: null,
+      };
+    }
+
+    const isPasswordMatched = await bcrypt.compare(password, user.password);
 
     if (!isPasswordMatched) {
       return {
@@ -410,17 +414,17 @@ const loginUserService = async (
     }
 
     if (!user.isVerified) {
-  return {
-    success: false,
-    statusCode: 403,
-    message: "Please verify your email first",
-    data: null,
-    errors: [{ field: "email", message: "Please verify your email before logging in" }],
-  };
-}
+      return {
+        success: false,
+        statusCode: 403,
+        message: "Please verify your email first",
+        data: null,
+        errors: [{ field: "email", message: "Please verify your email before logging in" }],
+      };
+    }
 
     const token = generateToken({
-      id: user._id.toString(),
+      id: user.id,
       email: user.email,
       role: ROLE.USER,
     });
@@ -431,7 +435,7 @@ const loginUserService = async (
       message: "Login successful",
       data: {
         user: {
-          id: user._id,
+          id: user.id,
           fullName: user.fullName,
           email: user.email,
           avatar: user.avatar,
@@ -456,7 +460,6 @@ const socialLoginService = async (
   body: any
 ): Promise<ServiceResponse> => {
   try {
-    // --- Validation ---
     const validation = userAuthValidation.socialLoginSchema.safeParse(body);
 
     if (!validation.success) {
@@ -476,7 +479,7 @@ const socialLoginService = async (
 
     const { provider, token } = validation.data;
 
-    let socialUser;
+    let socialUser: any;
 
     if (provider === "google") {
       socialUser = await verifyGoogleToken(token);
@@ -492,7 +495,7 @@ const socialLoginService = async (
       };
     }
 
-    const existingUser: any = await User.findOne({ email: socialUser.email });
+    const existingUser = await prisma.user.findFirst({ where: { email: socialUser.email } });
 
     if (existingUser && existingUser.provider === "local") {
       return {
@@ -504,38 +507,36 @@ const socialLoginService = async (
       };
     }
 
-    let user: any = existingUser;
+    let user = existingUser;
 
     if (!user) {
-      const UserModel: any = User;
-
-      user = new UserModel({
-        fullName: socialUser.fullName,
-        email: socialUser.email,
-        avatar: null,
-        role: "user",
-        provider,
-        providerId: socialUser.providerId,
-        isVerified: true,
-        emailVerificationToken: null,
-        emailVerificationExpires: null,
+      user = await prisma.user.create({
+        data: {
+          fullName: socialUser.fullName,
+          email: socialUser.email,
+          avatar: null,
+          role: "user",
+          provider,
+          providerId: socialUser.providerId,
+          isVerified: true,
+          emailVerificationToken: null,
+          emailVerificationExpires: null,
+        },
       });
-
-      await user.save();
 
       // Unified Admin Alert (Social Registration)
       await notifyAdmin({
         title: "New User Registration",
         message: `${socialUser.fullName} (${socialUser.email}) just registered via ${provider}.`,
         type: "info",
-        relatedId: user._id.toString(),
+        relatedId: user.id.toString(),
         relatedModel: "User",
         category: "customerNotifications",
       });
     }
 
     const authToken = generateToken({
-      id: user._id.toString(),
+      id: user.id,
       email: user.email,
       role: ROLE.USER,
     });
@@ -546,7 +547,7 @@ const socialLoginService = async (
       message: "Social login successful",
       data: {
         user: {
-          id: user._id,
+          id: user.id,
           fullName: user.fullName,
           email: user.email,
           avatar: user.avatar,
@@ -571,7 +572,6 @@ const forgotPasswordService = async (
   body: any
 ): Promise<ServiceResponse<null>> => {
   try {
-    // --- Validation ---
     const validation = userAuthValidation.forgotPasswordSchema.safeParse(body);
 
     if (!validation.success) {
@@ -591,7 +591,7 @@ const forgotPasswordService = async (
 
     const { email } = validation.data;
 
-    const user: any = await User.findOne({ email });
+    const user = await prisma.user.findFirst({ where: { email } });
 
     if (!user) {
       return {
@@ -619,18 +619,21 @@ const forgotPasswordService = async (
 
     const resetToken = crypto.randomBytes(32).toString("hex");
 
-    user.resetPasswordToken = resetToken;
-    user.resetPasswordExpires = new Date(
-      Date.now() + r9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8 * 60 * 1000
-    );
-
-    await user.save();
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        resetPasswordToken: resetToken,
+        resetPasswordExpires: new Date(
+          Date.now() + r9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8 * 60 * 1000
+        ),
+      },
+    });
 
     const resetLink = `${process.env.CLIENT_URL}/auth/reset-password?token=${resetToken}`;
 
     await mailTransporter.sendMail({
       from: process.env.MAIL_FROM,
-      to: user.email,
+      to: email,
       subject: "Reset Your Password",
       html: `
   <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; background: #f9fafb;">
@@ -685,7 +688,6 @@ const resetPasswordService = async (
       };
     }
 
-    // --- Validation ---
     const validation = userAuthValidation.resetPasswordSchema.safeParse({
       token,
       newPassword: body.password || body.newPassword,
@@ -707,9 +709,11 @@ const resetPasswordService = async (
       };
     }
 
-    const user: any = await User.findOne({
-      resetPasswordToken: token,
-      resetPasswordExpires: { $gt: new Date() },
+    const user = await prisma.user.findFirst({
+      where: {
+        resetPasswordToken: token,
+        resetPasswordExpires: { gt: new Date() },
+      },
     });
 
     if (!user) {
@@ -722,11 +726,16 @@ const resetPasswordService = async (
       };
     }
 
-    user.password = validation.data.newPassword;
-    user.resetPasswordToken = null;
-    user.resetPasswordExpires = null;
+    const hashedPassword = await bcrypt.hash(validation.data.newPassword, 10);
 
-    await user.save();
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: hashedPassword,
+        resetPasswordToken: null,
+        resetPasswordExpires: null,
+      },
+    });
 
     return {
       success: true,
@@ -749,7 +758,7 @@ const requestAccountDeletionService = async (
   userId: string
 ): Promise<ServiceResponse<null>> => {
   try {
-    const user = await User.findById(userId);
+    const user = await prisma.user.findUnique({ where: { id: userId } });
 
     if (!user) {
       return {
@@ -771,15 +780,17 @@ const requestAccountDeletionService = async (
       };
     }
 
-    user.deletionRequested = true;
-    await user.save();
+    await prisma.user.update({
+      where: { id: userId },
+      data: { deletionRequested: true },
+    });
 
     // Unified Admin Alert (Deletion Request)
     await notifyAdmin({
       title: "Account Deletion Requested",
       message: `${user.fullName} (${user.email}) requested to delete their account.`,
       type: "error",
-      relatedId: user._id.toString(),
+      relatedId: user.id.toString(),
       relatedModel: "User",
       category: "customerNotifications",
     });
@@ -805,7 +816,14 @@ const getEmailPreferencesService = async (
   userId: string
 ): Promise<ServiceResponse> => {
   try {
-    const user = await User.findById(userId).select("emailPreferences");
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        prefOrderUpdates: true,
+        prefPromotionalEmails: true,
+        prefProductRecommendations: true,
+      },
+    });
     if (!user) {
       return { success: false, statusCode: 404, message: "User not found", data: null };
     }
@@ -813,10 +831,10 @@ const getEmailPreferencesService = async (
       success: true,
       statusCode: 200,
       message: "Email preferences fetched",
-      data: user.emailPreferences || {
-        orderUpdates: true,
-        promotionalEmails: true,
-        productRecommendations: false,
+      data: {
+        orderUpdates: user.prefOrderUpdates,
+        promotionalEmails: user.prefPromotionalEmails,
+        productRecommendations: user.prefProductRecommendations,
       },
     };
   } catch (error: any) {
@@ -829,22 +847,29 @@ const updateEmailPreferencesService = async (
   prefs: { orderUpdates?: boolean; promotionalEmails?: boolean; productRecommendations?: boolean }
 ): Promise<ServiceResponse> => {
   try {
-    const user = await User.findById(userId);
+    const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       return { success: false, statusCode: 404, message: "User not found", data: null };
     }
 
-    if (prefs.orderUpdates !== undefined) user.emailPreferences.orderUpdates = prefs.orderUpdates;
-    if (prefs.promotionalEmails !== undefined) user.emailPreferences.promotionalEmails = prefs.promotionalEmails;
-    if (prefs.productRecommendations !== undefined) user.emailPreferences.productRecommendations = prefs.productRecommendations;
-
-    await user.save();
+    const updated = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        prefOrderUpdates: prefs.orderUpdates !== undefined ? prefs.orderUpdates : user.prefOrderUpdates,
+        prefPromotionalEmails: prefs.promotionalEmails !== undefined ? prefs.promotionalEmails : user.prefPromotionalEmails,
+        prefProductRecommendations: prefs.productRecommendations !== undefined ? prefs.productRecommendations : user.prefProductRecommendations,
+      },
+    });
 
     return {
       success: true,
       statusCode: 200,
       message: "Email preferences updated",
-      data: user.emailPreferences,
+      data: {
+        orderUpdates: updated.prefOrderUpdates,
+        promotionalEmails: updated.prefPromotionalEmails,
+        productRecommendations: updated.prefProductRecommendations,
+      },
     };
   } catch (error: any) {
     return { success: false, statusCode: 500, message: `Failed: ${error.message}`, data: null };
@@ -853,38 +878,41 @@ const updateEmailPreferencesService = async (
 
 const updateUserProfileService = async (userId: string, body: any): Promise<ServiceResponse<any>> => {
   try {
-    const user = await User.findById(userId);
+    const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) return { success: false, statusCode: 404, message: "User not found", data: null };
 
     // Email check if changed
     if (body.email && body.email !== user.email) {
-      const existing = await User.findOne({ email: body.email, _id: { $ne: userId } });
+      const existing = await prisma.user.findFirst({ where: { email: body.email, id: { not: userId } } });
       if (existing) {
         return { success: false, statusCode: 409, message: "Email is already taken", data: null, errors: [{ field: "email", message: "Email is already taken" }] };
       }
-      user.email = body.email;
     }
 
-    if (body.fullName) user.fullName = body.fullName;
-    if (body.bio !== undefined) user.bio = body.bio;
-    if (body.phone !== undefined) user.phone = body.phone;
-    if (body.dateOfBirth !== undefined) user.dateOfBirth = body.dateOfBirth;
-    if (body.avatar !== undefined) user.avatar = body.avatar;
-
-    await user.save();
+    const updated = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        fullName: body.fullName !== undefined ? body.fullName : user.fullName,
+        email: body.email !== undefined ? body.email : user.email,
+        bio: body.bio !== undefined ? body.bio : user.bio,
+        phone: body.phone !== undefined ? body.phone : user.phone,
+        dateOfBirth: body.dateOfBirth !== undefined ? body.dateOfBirth : user.dateOfBirth,
+        avatar: body.avatar !== undefined ? body.avatar : user.avatar,
+      },
+    });
 
     return {
       success: true,
       statusCode: 200,
       message: "Profile updated successfully",
       data: {
-        id: user._id,
-        fullName: user.fullName,
-        email: user.email,
-        avatar: user.avatar,
-        bio: user.bio,
-        phone: user.phone,
-        dateOfBirth: user.dateOfBirth,
+        id: updated.id,
+        fullName: updated.fullName,
+        email: updated.email,
+        avatar: updated.avatar,
+        bio: updated.bio,
+        phone: updated.phone,
+        dateOfBirth: updated.dateOfBirth,
       },
     };
   } catch (error: any) {

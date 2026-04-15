@@ -44,7 +44,7 @@ export const updateCouponStatus = async (req: Request, res: Response, next: Next
 export const validateCoupon = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { code, subtotal } = req.body;
-    const userId = (req as any).authUser?._id; // Extracted from auth middleware
+    const userId = (req as any).authUser?.id; // Extracted from auth middleware
     
     if (!userId) {
       return res.status(401).json({ success: false, message: "Unauthorized: User not found in request" });

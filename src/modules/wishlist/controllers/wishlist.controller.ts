@@ -1,50 +1,53 @@
 import { Request, Response, NextFunction } from "express";
-import Wishlist from "../models/wishlist.model";
-import Product from "../../product/models/product.model";
+import prisma from "../../../config/prisma";
 import { buildProductDetail } from "../../product/services/product.service";
 import sendResponse, { createError } from "../../../utils/apiResponse";
-import mongoose from "mongoose";
 
-// Helper to find or create wishlist for user
-const getOrCreateWishlist = async (userId: string) => {
-  let wishlist = await Wishlist.findOne({ userId });
+// Helper to get or create wishlist
+const getOrCreateWishlistId = async (userId: string): Promise<string> => {
+  let wishlist = await prisma.wishlist.findUnique({ where: { userId } });
   if (!wishlist) {
-    wishlist = new Wishlist({ userId, products: [] });
-    await wishlist.save();
+    wishlist = await prisma.wishlist.create({ data: { userId } });
   }
-  return wishlist;
+  return wishlist.id;
 };
 
 export const addWishlist = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const userId = (req as any).authUser._id;
+    const userId = (req as any).authUser?.id;
     const productId = req.body.productId;
 
-    if (!productId || typeof productId !== "string" || !mongoose.Types.ObjectId.isValid(productId)) {
+    if (!productId || typeof productId !== "string") {
       return next(createError({ statusCode: 400, message: "Valid Product ID string is required" }));
     }
 
-    // Validate product existence
-    const product = await Product.findById(productId);
+    const product = await prisma.product.findUnique({ where: { id: productId } });
     if (!product) {
       return next(createError({ statusCode: 404, message: "Product not found" }));
     }
 
-    const wishlist = await getOrCreateWishlist(userId);
+    const wishlistId = await getOrCreateWishlistId(userId);
 
     // Check if already in wishlist
-    const isPresent = wishlist.products.some(p => p.productId.toString() === productId);
-    if (isPresent) {
-      return sendResponse(res, { statusCode: 200, message: "Product already in wishlist", data: wishlist });
+    const existing = await prisma.wishlistItem.findFirst({
+      where: { wishlistId, productId },
+    });
+
+    if (existing) {
+      const wishlistItems = await prisma.wishlistItem.findMany({
+        where: { wishlistId },
+      });
+      return sendResponse(res, { statusCode: 200, message: "Product already in wishlist", data: { products: wishlistItems } });
     }
 
-    wishlist.products.push({ 
-      productId: new mongoose.Types.ObjectId(productId) as any, 
-      addedAt: new Date() 
+    await prisma.wishlistItem.create({
+      data: { wishlistId, productId },
     });
-    await wishlist.save();
 
-    return sendResponse(res, { statusCode: 201, message: "Product added to wishlist", data: wishlist });
+    const wishlistItems = await prisma.wishlistItem.findMany({
+      where: { wishlistId },
+    });
+    return sendResponse(res, { statusCode: 201, message: "Product added to wishlist", data: { products: wishlistItems } });
   } catch (error) {
     next(error);
   }
@@ -52,22 +55,26 @@ export const addWishlist = async (req: Request, res: Response, next: NextFunctio
 
 export const removeWishlist = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const userId = (req as any).authUser._id;
-    const { productId } = req.params;
+    const userId = (req as any).authUser?.id;
+    const productId = req.params.productId;
 
-    if (!productId || typeof productId !== "string" || !mongoose.Types.ObjectId.isValid(productId)) {
+    if (!productId || typeof productId !== "string") {
       return next(createError({ statusCode: 400, message: "Valid Product ID string is required" }));
     }
 
-    const wishlist = await Wishlist.findOne({ userId });
-    if (!wishlist) {
-      return next(createError({ statusCode: 404, message: "Wishlist not found" }));
+    const wishlist = await prisma.wishlist.findUnique({ where: { userId } });
+    if (wishlist) {
+      await prisma.wishlistItem.deleteMany({
+        where: { wishlistId: wishlist.id, productId },
+      });
     }
 
-    wishlist.products = wishlist.products.filter(p => p.productId.toString() !== productId);
-    await wishlist.save();
-
-    return sendResponse(res, { statusCode: 200, message: "Product removed from wishlist", data: wishlist });
+    const wishlistId = wishlist ? wishlist.id : "";
+    const wishlistItems = wishlistId 
+      ? await prisma.wishlistItem.findMany({ where: { wishlistId } })
+      : [];
+      
+    return sendResponse(res, { statusCode: 200, message: "Product removed from wishlist", data: { products: wishlistItems } });
   } catch (error) {
     next(error);
   }
@@ -75,36 +82,32 @@ export const removeWishlist = async (req: Request, res: Response, next: NextFunc
 
 export const getWishlist = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const userId = (req as any).authUser._id;
-    const wishlist = await Wishlist.findOne({ userId }).populate({
-      path: "products.productId",
-      select: "name slug price images avgRating reviewCount isFeatured description isActive"
+    const userId = (req as any).authUser?.id;
+
+    const wishlist = await prisma.wishlist.findUnique({
+      where: { userId },
+      include: {
+        items: {
+          include: { product: true },
+        },
+      },
     });
 
-    if (!wishlist) {
+    if (!wishlist || wishlist.items.length === 0) {
       return sendResponse(res, { statusCode: 200, message: "Wishlist is empty", data: { products: [] } });
     }
 
-    // Fetch full product details for each item to ensure stock and other computed fields are included
     const productsWithDetails = await Promise.all(
-      wishlist.products
-        .filter(p => p.productId !== null)
-        .map(p => buildProductDetail(p.productId))
+      wishlist.items.map(async (item) => {
+        const detail = await buildProductDetail(item.product);
+        return { ...detail, addedAt: item.addedAt };
+      })
     );
-    
-    // Add addedAt back to the mapped product objects
-    const finalProducts = productsWithDetails.map((pd, index) => {
-      const originalProduct = wishlist.products.filter(p => p.productId !== null)[index];
-      return {
-        ...pd,
-        addedAt: originalProduct.addedAt
-      };
-    });
 
-    return sendResponse(res, { 
-      statusCode: 200, 
-      message: "Wishlist fetched successfully", 
-      data: { products: finalProducts } 
+    return sendResponse(res, {
+      statusCode: 200,
+      message: "Wishlist fetched successfully",
+      data: { products: productsWithDetails },
     });
   } catch (error) {
     next(error);
@@ -113,12 +116,11 @@ export const getWishlist = async (req: Request, res: Response, next: NextFunctio
 
 export const clearWishlist = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const userId = (req as any).authUser._id;
-    const wishlist = await Wishlist.findOne({ userId });
-    
+    const userId = (req as any).authUser?.id;
+
+    const wishlist = await prisma.wishlist.findUnique({ where: { userId } });
     if (wishlist) {
-      wishlist.products = [];
-      await wishlist.save();
+      await prisma.wishlistItem.deleteMany({ where: { wishlistId: wishlist.id } });
     }
 
     return sendResponse(res, { statusCode: 200, message: "Wishlist cleared successfully", data: { products: [] } });
@@ -129,37 +131,46 @@ export const clearWishlist = async (req: Request, res: Response, next: NextFunct
 
 export const syncWishlist = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const userId = (req as any).authUser._id;
-    const { productIds } = req.body; // Array of product IDs from localStorage
+    const userId = (req as any).authUser?.id || "";
+    const { productIds } = req.body;
 
     if (!Array.isArray(productIds)) {
       return next(createError({ statusCode: 400, message: "productIds must be an array" }));
     }
 
-    // Validate valid ObjectIds and filter out invalid ones
-    const validIds = (productIds as string[]).filter(id => typeof id === "string" && mongoose.Types.ObjectId.isValid(id));
-    
-    // Check which ones actually exist in DB
-    const existingProducts = await Product.find({ _id: { $in: validIds } }).select("_id");
-    const existingIds = existingProducts.map(p => p._id.toString());
+    const validIds = (productIds as string[]).filter((id) => typeof id === "string" && id.trim());
 
-    const wishlist = await getOrCreateWishlist(userId);
+    // Check which ones actually exist in DB
+    const existingProducts = await prisma.product.findMany({
+      where: { id: { in: validIds } },
+      select: { id: true },
+    });
+    const existingIds = existingProducts.map((p) => p.id);
+
+    const wishlistId = await getOrCreateWishlistId(userId);
+
+    // Get current items in this wishlist
+    const currentItems = await prisma.wishlistItem.findMany({
+      where: { wishlistId },
+      select: { productId: true },
+    });
+    const currentProductIds = currentItems.map((item) => item.productId);
 
     // Merge without duplicates
-    const currentProductIds = wishlist.products.map(p => p.productId.toString());
-    const newItems = existingIds
-      .filter(id => !currentProductIds.includes(id))
-      .map(id => ({ productId: new mongoose.Types.ObjectId(id) as any, addedAt: new Date() }));
+    const newIds = existingIds.filter((id) => !currentProductIds.includes(id));
 
-    if (newItems.length > 0) {
-      wishlist.products.push(...newItems);
-      await wishlist.save();
+    if (newIds.length > 0) {
+      await prisma.wishlistItem.createMany({
+        data: newIds.map((productId) => ({ wishlistId, productId })),
+        skipDuplicates: true,
+      });
     }
 
-    return sendResponse(res, { 
-      statusCode: 200, 
-      message: "Wishlist synced successfully", 
-      data: wishlist 
+    const updatedItems = await prisma.wishlistItem.findMany({ where: { wishlistId } });
+    return sendResponse(res, {
+      statusCode: 200,
+      message: "Wishlist synced successfully",
+      data: { products: updatedItems },
     });
   } catch (error) {
     next(error);
