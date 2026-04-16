@@ -23,6 +23,119 @@ const generateOrderNumber = (): string => {
   return `ORD-${timestamp}-${random}`;
 };
 
+// Helper to flatten addresses for frontend
+const formatOrderResponse = (order: any) => {
+  if (!order) return null;
+  const result = { ...order };
+  if (Array.isArray(order.addresses)) {
+    result.shippingAddress = order.addresses.find((a: any) => a.type === "shipping");
+    result.billingAddress = order.addresses.find((a: any) => a.type === "billing");
+  }
+  return result;
+};
+
+// Deduct Stock Helper
+// Deduct Stock Helper - now idempotent and robust
+export const deductOrderStock = async (orderId: string) => {
+  console.log(`[Inventory] Starting stock deduction for order: ${orderId}`);
+  try {
+    await prisma.$transaction(async (tx) => {
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+        include: { items: true },
+      });
+
+      if (!order) {
+        console.warn(`[Inventory] Order ${orderId} not found`);
+        return;
+      }
+      if (order.inventoryUpdated) {
+        console.log(`[Idempotency] Stock already deducted for order: ${order.orderNumber}`);
+        return;
+      }
+
+      for (const item of order.items) {
+        console.log(`[Inventory] Processing item: ${item.name} (${item.productId})`);
+        
+        // Build dynamic filter with case-insensitive matching
+        const variantWhere: any = { productId: item.productId };
+        if (item.selectedColor) {
+          variantWhere.color = { equals: item.selectedColor, mode: 'insensitive' };
+        }
+        if (item.selectedSize) {
+          variantWhere.size = { equals: item.selectedSize, mode: 'insensitive' };
+        }
+
+        let variant = await tx.variant.findFirst({ where: variantWhere });
+        
+        // Fallback 1: Match by color only (if size failed)
+        if (!variant && item.selectedColor) {
+           console.log(`[Inventory] Exact match failed, trying color-only fallback for: ${item.selectedColor}`);
+          variant = await tx.variant.findFirst({
+            where: { 
+              productId: item.productId, 
+              color: { equals: item.selectedColor, mode: 'insensitive' } 
+            },
+          });
+        }
+        
+        // Fallback 2: Take first available variant
+        if (!variant) {
+          console.log(`[Inventory] Color-only failed, taking first available variant for product`);
+          variant = await tx.variant.findFirst({ where: { productId: item.productId } });
+        }
+
+        if (variant) {
+          console.log(`[Inventory] Found variant: ${variant.id} (Color: ${variant.color}, Size: ${variant.size})`);
+          const stock = await tx.stock.findFirst({ where: { variantId: variant.id } });
+          if (stock) {
+            const oldQty = stock.quantity;
+            const newQty = Math.max(0, oldQty - item.quantity);
+            let newStatus = "in_stock";
+            if (newQty <= 0) newStatus = "out_of_stock";
+            else if (newQty <= stock.lowStockThreshold) newStatus = "low_stock";
+
+            await tx.stock.update({
+              where: { id: stock.id },
+              data: { quantity: newQty, status: newStatus },
+            });
+            
+            console.log(`[Inventory] ✅ Updated Stock for ${item.name}: ${oldQty} -> ${newQty}`);
+
+            // Low Stock Alert
+            if (newQty <= stock.lowStockThreshold) {
+              const product = await tx.product.findUnique({ where: { id: item.productId } });
+              const variantDetails = [item.selectedColor, item.selectedSize].filter(Boolean).join(" - ");
+              await notifyAdmin({
+                title: "Low Stock Alert",
+                message: `Product "${product?.name || item.name}" ${variantDetails ? `(${variantDetails})` : ""} is low on stock (${newQty} left).`,
+                type: "warning",
+                relatedId: product?.slug || item.productId,
+                relatedModel: "Product",
+                category: "inventoryNotifications",
+              });
+            }
+          } else {
+            console.error(`[Inventory] ❌ No stock record found for variant: ${variant.id}`);
+          }
+        } else {
+          console.error(`[Inventory] ❌ No variant record found for productId: ${item.productId}`);
+        }
+      }
+
+      // Mark as updated
+      await tx.order.update({
+        where: { id: orderId },
+        data: { inventoryUpdated: true },
+      });
+
+      console.log(`✅ [Inventory] Complete deduction for order: ${order.orderNumber}`);
+    });
+  } catch (error: any) {
+    console.error(`[Inventory] ❌ Error during deduction for ${orderId}:`, error.message);
+  }
+};
+
 const addressSchema = z.object({
   name: z.string().min(1, "Name is required"),
   street: z.string().min(1, "Street is required"),
@@ -174,6 +287,13 @@ export const createOrderService = async (
       },
     });
 
+    // If Stripe, update the Payment Intent with the Order ID for better webhook tracking
+    if (data.paymentMethod === "stripe" && stripePaymentIntentId) {
+      await stripe.paymentIntents.update(stripePaymentIntentId, {
+        metadata: { orderId: order.id },
+      }).catch(e => console.error("Failed to update PI metadata:", e.message));
+    }
+
     // Update Coupon usage if applied
     if (data.couponCode) {
       const coupon = await prisma.coupon.findFirst({
@@ -199,50 +319,9 @@ export const createOrderService = async (
       }
     }
 
-    // Deduct stock and check low stock threshold
-    for (const item of data.items) {
-      const variantWhere: any = { productId: item.productId };
-      if (item.selectedColor) variantWhere.color = item.selectedColor;
-      if (item.selectedSize) variantWhere.size = item.selectedSize;
-
-      let variant = await prisma.variant.findFirst({ where: variantWhere });
-      if (!variant && item.selectedColor) {
-        variant = await prisma.variant.findFirst({
-          where: { productId: item.productId, color: item.selectedColor },
-        });
-      }
-      if (!variant) {
-        variant = await prisma.variant.findFirst({ where: { productId: item.productId } });
-      }
-
-      if (variant) {
-        const stock = await prisma.stock.findFirst({ where: { variantId: variant.id } });
-        if (stock) {
-          const newQty = Math.max(0, stock.quantity - item.quantity);
-          let newStatus = "in_stock";
-          if (newQty <= 0) newStatus = "out_of_stock";
-          else if (newQty <= stock.lowStockThreshold) newStatus = "low_stock";
-
-          await prisma.stock.update({
-            where: { id: stock.id },
-            data: { quantity: newQty, status: newStatus },
-          });
-
-          // Low Stock Alert
-          if (newQty <= stock.lowStockThreshold) {
-            const product = await prisma.product.findUnique({ where: { id: item.productId } });
-            const variantDetails = [item.selectedColor, item.selectedSize].filter(Boolean).join(" - ");
-            await notifyAdmin({
-              title: "Low Stock Alert",
-              message: `Product "${product?.name || item.name}" ${variantDetails ? `(${variantDetails})` : ""} is low on stock (${newQty} left).`,
-              type: "warning",
-              relatedId: product?.slug || item.productId,
-              relatedModel: "Product",
-              category: "inventoryNotifications",
-            });
-          }
-        }
-      }
+    // Deduct stock immediately ONLY if COD
+    if (data.paymentMethod === "cod") {
+      await deductOrderStock(order.id);
     }
 
     // New Order Alert
@@ -295,7 +374,7 @@ export const getUserOrdersService = async (
       success: true,
       statusCode: 200,
       message: "Orders fetched successfully",
-      data: orders,
+      data: orders.map(formatOrderResponse),
     };
   } catch (error: any) {
     return { success: false, statusCode: 500, message: `Failed to fetch orders: ${error.message}`, data: null };
@@ -317,7 +396,7 @@ export const getAllOrdersService = async (): Promise<ServiceResponse> => {
       success: true,
       statusCode: 200,
       message: "All orders fetched successfully",
-      data: orders,
+      data: orders.map(formatOrderResponse),
     };
   } catch (error: any) {
     return { success: false, statusCode: 500, message: `Failed to fetch all orders: ${error.message}`, data: null };
@@ -338,7 +417,7 @@ export const getOrderByIdService = async (orderId: string): Promise<ServiceRespo
     if (!order) {
       return { success: false, statusCode: 404, message: "Order not found", data: null };
     }
-    return { success: true, statusCode: 200, message: "Order fetched", data: order };
+    return { success: true, statusCode: 200, message: "Order fetched", data: formatOrderResponse(order) };
   } catch (error: any) {
     return { success: false, statusCode: 500, message: `Failed to fetch order: ${error.message}`, data: null };
   }
@@ -419,7 +498,7 @@ export const updateOrderStatusService = async (
       success: true,
       statusCode: 200,
       message: "Order status updated successfully",
-      data: updatedOrder,
+      data: formatOrderResponse(updatedOrder),
     };
   } catch (error: any) {
     return { success: false, statusCode: 500, message: `Failed to update status: ${error.message}`, data: null };
@@ -592,6 +671,9 @@ export const confirmOrderPaymentService = async (
         stripePaymentIntentId: paymentIntentId,
       },
     });
+
+    // Deduct stock on payment completion
+    await deductOrderStock(order.id);
 
     console.log(` Order ${updatedOrder.orderNumber} confirmed via frontend callback → paid & processing`);
 

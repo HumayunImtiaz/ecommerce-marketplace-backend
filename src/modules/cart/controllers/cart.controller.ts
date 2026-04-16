@@ -11,13 +11,37 @@ export const getCart = async (req: Request, res: Response, next: NextFunction) =
 
     let cart = await prisma.cart.findFirst({
       where: { userId },
-      include: { items: { include: { product: true } } },
+      include: {
+        items: {
+          include: {
+            product: {
+              include: {
+                variants: {
+                  include: { stock: true },
+                },
+              },
+            },
+          },
+        },
+      },
     });
 
     if (!cart) {
       cart = await prisma.cart.create({
         data: { userId, items: { create: [] } },
-        include: { items: { include: { product: true } } },
+        include: {
+          items: {
+            include: {
+              product: {
+                include: {
+                  variants: {
+                    include: { stock: true },
+                  },
+                },
+              },
+            },
+          },
+        },
       });
     }
 
@@ -90,7 +114,7 @@ export const addToCart = async (req: Request, res: Response, next: NextFunction)
           createError({
             statusCode: 400,
             success: false,
-            message: "stock itna hi prahai abhi",
+            message: "Not enough stock available for this product.",
             data: null,
           })
         );
@@ -116,7 +140,19 @@ export const addToCart = async (req: Request, res: Response, next: NextFunction)
 
     const updatedCart = await prisma.cart.findFirst({
       where: { id: cart.id },
-      include: { items: { include: { product: true } } },
+      include: {
+        items: {
+          include: {
+            product: {
+              include: {
+                variants: {
+                  include: { stock: true },
+                },
+              },
+            },
+          },
+        },
+      },
     });
 
     return sendResponse(res, {
@@ -211,7 +247,19 @@ export const updateQuantity = async (req: Request, res: Response, next: NextFunc
 
     const updatedCart = await prisma.cart.findFirst({
       where: { id: cart.id },
-      include: { items: { include: { product: true } } },
+      include: {
+        items: {
+          include: {
+            product: {
+              include: {
+                variants: {
+                  include: { stock: true },
+                },
+              },
+            },
+          },
+        },
+      },
     });
 
     return sendResponse(res, {
@@ -248,7 +296,19 @@ export const removeFromCart = async (req: Request, res: Response, next: NextFunc
 
     const updatedCart = await prisma.cart.findFirst({
       where: { id: cart.id },
-      include: { items: { include: { product: true } } },
+      include: {
+        items: {
+          include: {
+            product: {
+              include: {
+                variants: {
+                  include: { stock: true },
+                },
+              },
+            },
+          },
+        },
+      },
     });
 
     return sendResponse(res, {

@@ -181,8 +181,18 @@ const createProductService = async (body: any): Promise<ServiceResponse> => {
 const getProductBySlugService = async (slug: string): Promise<ServiceResponse> => {
   try {
     const product = await prisma.product.findFirst({
-      where: { slug },
-      include: { category: { select: { name: true, slug: true } } },
+      where: {
+        slug: slug,
+        isDeleted: false,
+      },
+      include: {
+        category: {
+          select: {
+            name: true,
+            slug: true,
+          },
+        },
+      },
     });
     if (!product) {
       return { success: false, statusCode: 404, message: "Product not found", data: null };
@@ -217,9 +227,13 @@ const getAllProductsService = async (options: any = {}): Promise<ServiceResponse
       sortBy,
       page = 1,
       limit = 12,
+      includeDeleted = false, // Added for admin if needed
     } = options;
 
     const where: any = {};
+    if (!includeDeleted) {
+      where.isDeleted = false;
+    }
 
     if (isFeatured !== undefined) {
       where.isFeatured = isFeatured === "true" || isFeatured === true;
@@ -456,8 +470,11 @@ const deleteProductService = async (productId: string): Promise<ServiceResponse>
 
     const categoryId = product.categoryId;
 
-    // Cascade delete handles variants -> stocks via schema onDelete: Cascade
-    await prisma.product.delete({ where: { id: productId } });
+    // Use soft delete instead of permanent delete
+    await prisma.product.update({
+      where: { id: productId },
+      data: { isDeleted: true, isActive: false },
+    });
 
     if (categoryId) {
       const remainingProducts = await prisma.product.count({ where: { categoryId } });
@@ -506,8 +523,11 @@ const bulkDeleteProductService = async (productIds: string[]): Promise<ServiceRe
     });
     const categoryIds = Array.from(new Set(products.map((p) => p.categoryId).filter(Boolean))) as string[];
 
-    // Delete all products (cascade handles variants + stocks)
-    await prisma.product.deleteMany({ where: { id: { in: productIds } } });
+    // Use soft delete
+    await prisma.product.updateMany({
+      where: { id: { in: productIds } },
+      data: { isDeleted: true, isActive: false },
+    });
 
     // Auto-cleanup categories
     for (const catId of categoryIds) {

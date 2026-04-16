@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import Stripe from "stripe";
 import nodemailer from "nodemailer";
 import prisma from "../../../config/prisma";
+import { deductOrderStock } from "./order.service";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string);
 
@@ -119,6 +120,9 @@ export const handleStripeWebhook = async (req: Request, res: Response) => {
             stripePaymentIntentId: paymentIntent.id,
           },
         });
+
+        // Deduct stock on payment success
+        await deductOrderStock(order.id);
 
         console.log(` Order ${order.orderNumber} → paid & processing`);
 

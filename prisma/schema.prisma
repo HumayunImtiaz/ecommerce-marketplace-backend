@@ -87,6 +87,7 @@ model Product {
   isFeatured    Boolean        @default(false)
   avgRating     Float          @default(0)
   reviewCount   Int            @default(0)
+  isDeleted     Boolean        @default(false)
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   cartItems     CartItem[]
@@ -151,6 +152,7 @@ model Order {
   orderStatus           String         @default("pending")
   couponCode            String?
   discountAmount        Float          @default(0)
+  inventoryUpdated      Boolean        @default(false)
   createdAt             DateTime       @default(now())
   updatedAt             DateTime       @updatedAt
   user                  User           @relation(fields: [userId], references: [id])
