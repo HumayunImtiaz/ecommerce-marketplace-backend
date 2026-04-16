@@ -1,5 +1,5 @@
 import { Request, Response } from 'express'
-import User from '../models/user.model'
+import prisma from '../../../config/prisma'
 
 type AuthRequest = Request & {
   authUser?: any
@@ -9,7 +9,7 @@ export class AddressService {
   // Add a new address
   static async addAddress(req: AuthRequest, res: Response) {
     try {
-      const userId = (req.authUser)?._id
+      const userId = (req.authUser)?.id
       const {
         name,
         street,
@@ -33,50 +33,50 @@ export class AddressService {
           })
       }
 
-      const user = await User.findById(userId)
+      const user = await prisma.user.findUnique({ where: { id: userId } })
       if (!user) {
         return res
           .status(404)
           .json({ success: false, message: 'User not found', data: null })
       }
 
+      const existingAddresses = await prisma.address.findMany({ where: { userId } })
+
       // If this is the first address or isDefault is true, make it default
-      const shouldBeDefault =
-        isDefault || !user.addresses || user.addresses.length === 0
+      const shouldBeDefault = isDefault || existingAddresses.length === 0
 
       // If setting as default, remove default from other addresses
-      if (shouldBeDefault && user.addresses) {
-        user.addresses = user.addresses.map((addr) => ({
-          ...addr,
-          isDefault: false,
-        }))
+      if (shouldBeDefault && existingAddresses.length > 0) {
+        await prisma.address.updateMany({
+          where: { userId },
+          data: { isDefault: false },
+        })
       }
 
       // Add new address
-      const newAddress = {
-        _id: undefined,
-        name: name || 'Home',
-        street,
-        city,
-        state: state || '',
-        zipCode: zipCode || '',
-        country: country || 'Pakistan',
-        latitude,
-        longitude,
-        isDefault: shouldBeDefault,
-      }
+      await prisma.address.create({
+        data: {
+          userId,
+          name: name || 'Home',
+          street,
+          city,
+          state: state || '',
+          zipCode: zipCode || '',
+          country: country || 'Pakistan',
+          latitude,
+          longitude,
+          isDefault: shouldBeDefault,
+        },
+      })
 
-      user.addresses = user.addresses || []
-      user.addresses.push(newAddress as any)
-
-      await user.save()
+      const addresses = await prisma.address.findMany({ where: { userId } })
 
       return res
         .status(201)
         .json({
           success: true,
           message: 'Address added successfully',
-          data: user.addresses,
+          data: addresses,
         })
     } catch (error) {
       console.error('Add address error:', error)
@@ -89,21 +89,23 @@ export class AddressService {
   // Get all addresses
   static async getAddresses(req: AuthRequest, res: Response) {
     try {
-      const userId = (req.authUser)?._id
+      const userId = (req.authUser)?.id
 
-      const user = await User.findById(userId).select('addresses')
+      const user = await prisma.user.findUnique({ where: { id: userId } })
       if (!user) {
         return res
           .status(404)
           .json({ success: false, message: 'User not found', data: null })
       }
 
+      const addresses = await prisma.address.findMany({ where: { userId } })
+
       return res
         .status(200)
         .json({
           success: true,
           message: 'Addresses retrieved successfully',
-          data: user.addresses || [],
+          data: addresses || [],
         })
     } catch (error) {
       console.error('Get addresses error:', error)
@@ -120,8 +122,8 @@ export class AddressService {
   // Update address
   static async updateAddress(req: AuthRequest, res: Response) {
     try {
-      const userId = (req.authUser)?._id
-      const { addressId } = req.params
+      const userId = (req.authUser)?.id
+      const addressId = req.params.addressId as string
       const {
         name,
         street,
@@ -134,16 +136,16 @@ export class AddressService {
         isDefault,
       } = req.body
 
-      const user = await User.findById(userId)
+      const user = await prisma.user.findUnique({ where: { id: userId } })
       if (!user) {
         return res
           .status(404)
           .json({ success: false, message: 'User not found', data: null })
       }
 
-      const address = user.addresses?.find(
-        (addr) => addr._id?.toString() === addressId
-      )
+      const address = await prisma.address.findFirst({
+        where: { id: addressId, userId },
+      })
       if (!address) {
         return res
           .status(404)
@@ -152,31 +154,36 @@ export class AddressService {
 
       // If setting as default, remove default from other addresses
       if (isDefault) {
-        user.addresses = user.addresses.map((addr) => ({
-          ...addr,
-          isDefault: addr._id?.toString() === addressId,
-        }))
+        await prisma.address.updateMany({
+          where: { userId, id: { not: addressId } },
+          data: { isDefault: false },
+        })
       }
 
       // Update address fields
-      if (name !== undefined) address.name = name
-      if (street !== undefined) address.street = street
-      if (city !== undefined) address.city = city
-      if (state !== undefined) address.state = state
-      if (zipCode !== undefined) address.zipCode = zipCode
-      if (country !== undefined) address.country = country
-      if (latitude !== undefined) address.latitude = latitude
-      if (longitude !== undefined) address.longitude = longitude
-      if (isDefault !== undefined) address.isDefault = isDefault
+      await prisma.address.update({
+        where: { id: addressId },
+        data: {
+          name: name !== undefined ? name : address.name,
+          street: street !== undefined ? street : address.street,
+          city: city !== undefined ? city : address.city,
+          state: state !== undefined ? state : address.state,
+          zipCode: zipCode !== undefined ? zipCode : address.zipCode,
+          country: country !== undefined ? country : address.country,
+          latitude: latitude !== undefined ? latitude : address.latitude,
+          longitude: longitude !== undefined ? longitude : address.longitude,
+          isDefault: isDefault !== undefined ? isDefault : address.isDefault,
+        },
+      })
 
-      await user.save()
+      const addresses = await prisma.address.findMany({ where: { userId } })
 
       return res
         .status(200)
         .json({
           success: true,
           message: 'Address updated successfully',
-          data: user.addresses,
+          data: addresses,
         })
     } catch (error) {
       console.error('Update address error:', error)
@@ -193,42 +200,47 @@ export class AddressService {
   // Delete address
   static async deleteAddress(req: AuthRequest, res: Response) {
     try {
-      const userId = (req.authUser)?._id
-      const { addressId } = req.params
+      const userId = (req.authUser)?.id
+      const addressId = req.params.addressId as string
 
-      const user = await User.findById(userId)
+      const user = await prisma.user.findUnique({ where: { id: userId } })
       if (!user) {
         return res
           .status(404)
           .json({ success: false, message: 'User not found', data: null })
       }
 
-      const addressIndex = user.addresses?.findIndex(
-        (addr) => addr._id?.toString() === addressId
-      )
+      const address = await prisma.address.findFirst({
+        where: { id: addressId, userId },
+      })
 
-      if (addressIndex === -1 || addressIndex === undefined) {
+      if (!address) {
         return res
           .status(404)
           .json({ success: false, message: 'Address not found', data: null })
       }
 
-      const wasDefault = user.addresses![addressIndex].isDefault
-      user.addresses?.splice(addressIndex, 1)
+      await prisma.address.delete({ where: { id: addressId } })
 
       // If deleted address was default and there are remaining addresses, set first as default
-      if (wasDefault && user.addresses && user.addresses.length > 0) {
-        user.addresses[0].isDefault = true
+      if (address.isDefault) {
+        const remaining = await prisma.address.findFirst({ where: { userId } })
+        if (remaining) {
+          await prisma.address.update({
+            where: { id: remaining.id },
+            data: { isDefault: true },
+          })
+        }
       }
 
-      await user.save()
+      const addresses = await prisma.address.findMany({ where: { userId } })
 
       return res
         .status(200)
         .json({
           success: true,
           message: 'Address deleted successfully',
-          data: user.addresses,
+          data: addresses,
         })
     } catch (error) {
       console.error('Delete address error:', error)
@@ -245,19 +257,19 @@ export class AddressService {
   // Set default address
   static async setDefaultAddress(req: AuthRequest, res: Response) {
     try {
-      const userId = (req.authUser)?._id
-      const { addressId } = req.params
+      const userId = (req.authUser)?.id || ""
+      const addressId = req.params.addressId as string
 
-      const user = await User.findById(userId)
+      const user = await prisma.user.findUnique({ where: { id: userId } })
       if (!user) {
         return res
           .status(404)
           .json({ success: false, message: 'User not found', data: null })
       }
 
-      const addressExists = user.addresses?.some(
-        (addr) => addr._id?.toString() === addressId
-      )
+      const addressExists = await prisma.address.findFirst({
+        where: { id: addressId, userId },
+      })
 
       if (!addressExists) {
         return res
@@ -266,19 +278,23 @@ export class AddressService {
       }
 
       // Set all to false, then set target to true
-      user.addresses = user.addresses?.map((addr) => ({
-        ...addr,
-        isDefault: addr._id?.toString() === addressId,
-      }))
+      await prisma.address.updateMany({
+        where: { userId },
+        data: { isDefault: false },
+      })
+      await prisma.address.update({
+        where: { id: addressId },
+        data: { isDefault: true },
+      })
 
-      await user.save()
+      const addresses = await prisma.address.findMany({ where: { userId } })
 
       return res
         .status(200)
         .json({
           success: true,
           message: 'Default address updated successfully',
-          data: user.addresses,
+          data: addresses,
         })
     } catch (error) {
       console.error('Set default address error:', error)

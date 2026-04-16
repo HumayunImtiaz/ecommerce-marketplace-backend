@@ -1,4 +1,4 @@
-import Category from "../models/category.model";
+import prisma from "../../../config/prisma";
 import { categoryValidation } from "../validations/category.validation";
 import slugify from "slugify";
 
@@ -21,7 +21,6 @@ const generateSlug = (name: string): string => {
 
 const createCategoryService = async (body: any): Promise<ServiceResponse> => {
   try {
-    // --- Validation ---
     const validation = categoryValidation.createCategorySchema.safeParse(body);
 
     if (!validation.success) {
@@ -44,8 +43,10 @@ const createCategoryService = async (body: any): Promise<ServiceResponse> => {
       ? validData.slug.toLowerCase().trim()
       : generateSlug(validData.name);
 
-    const existing = await Category.findOne({
-      $or: [{ name: validData.name }, { slug }],
+    const existing = await prisma.category.findFirst({
+      where: {
+        OR: [{ name: validData.name }, { slug }],
+      },
     });
 
     if (existing) {
@@ -60,14 +61,14 @@ const createCategoryService = async (body: any): Promise<ServiceResponse> => {
       };
     }
 
-    const category = new Category({
-      name: validData.name,
-      slug,
-      description: validData.description || null,
-      image: validData.image || "",
+    const category = await prisma.category.create({
+      data: {
+        name: validData.name,
+        slug,
+        description: validData.description || null,
+        image: validData.image || "",
+      },
     });
-
-    await category.save();
 
     return {
       success: true,
@@ -90,32 +91,18 @@ const getAllCategoriesService = async (hideEmpty: boolean = false): Promise<Serv
   try {
     let categories;
     if (hideEmpty) {
-      // Use aggregation to find categories that have at least one product
-      categories = await Category.aggregate([
-        {
-          $lookup: {
-            from: "products",
-            localField: "_id",
-            foreignField: "categoryId",
-            as: "products",
-          },
+      // Get categories that have at least one product
+      categories = await prisma.category.findMany({
+        where: {
+          isActive: true,
+          products: { some: {} },
         },
-        {
-          $addFields: {
-            productCount: { $size: "$products" },
-          },
-        },
-        {
-          $match: {
-            productCount: { $gt: 0 },
-            isActive: true
-          },
-        },
-        { $sort: { createdAt: -1 } },
-        { $project: { products: 0, productCount: 0 } }
-      ]);
+        orderBy: { createdAt: "desc" },
+      });
     } else {
-      categories = await Category.find().sort({ createdAt: -1 });
+      categories = await prisma.category.findMany({
+        orderBy: { createdAt: "desc" },
+      });
     }
 
     return {
@@ -140,7 +127,6 @@ const updateCategoryService = async (
   body: any
 ): Promise<ServiceResponse> => {
   try {
-    // --- Validation ---
     const validation = categoryValidation.updateCategorySchema.safeParse(body);
 
     if (!validation.success) {
@@ -159,7 +145,7 @@ const updateCategoryService = async (
     }
 
     const validData = validation.data;
-    const category = await Category.findById(categoryId);
+    const category = await prisma.category.findUnique({ where: { id: categoryId } });
 
     if (!category) {
       return {
@@ -171,19 +157,26 @@ const updateCategoryService = async (
       };
     }
 
+    let slug = category.slug;
+    let name = category.name;
+
     if (validData.name || validData.slug) {
-      const slug = validData.slug
+      slug = validData.slug
         ? validData.slug.toLowerCase().trim()
         : validData.name
         ? generateSlug(validData.name)
         : category.slug;
 
-      const duplicate = await Category.findOne({
-        _id: { $ne: categoryId },
-        $or: [
-          ...(validData.name ? [{ name: validData.name }] : []),
-          { slug },
-        ],
+      if (validData.name) name = validData.name;
+
+      const duplicate = await prisma.category.findFirst({
+        where: {
+          id: { not: categoryId },
+          OR: [
+            ...(validData.name ? [{ name: validData.name }] : []),
+            { slug },
+          ],
+        },
       });
 
       if (duplicate) {
@@ -195,32 +188,24 @@ const updateCategoryService = async (
           errors: [{ field: "name", message: "Category name or slug already taken by another category" }],
         };
       }
-
-      if (validData.name) {
-        category.name = validData.name;
-      }
-      category.slug = slug;
     }
 
-    if (validData.description !== undefined) {
-      category.description = validData.description || null;
-    }
-
-    if (validData.image !== undefined) {
-      category.image = validData.image || "";
-    }
-
-    if (validData.isActive !== undefined) {
-      category.isActive = validData.isActive;
-    }
-
-    await category.save();
+    const updatedCategory = await prisma.category.update({
+      where: { id: categoryId },
+      data: {
+        name,
+        slug,
+        description: validData.description !== undefined ? validData.description || null : category.description,
+        image: validData.image !== undefined ? validData.image || "" : category.image,
+        isActive: validData.isActive !== undefined ? validData.isActive : category.isActive,
+      },
+    });
 
     return {
       success: true,
       statusCode: 200,
       message: "Category updated successfully",
-      data: category,
+      data: updatedCategory,
     };
   } catch (error: any) {
     console.error("updateCategoryService error:", error);
@@ -247,7 +232,7 @@ const deleteCategoryService = async (
       };
     }
 
-    const category = await Category.findById(categoryId);
+    const category = await prisma.category.findUnique({ where: { id: categoryId } });
 
     if (!category) {
       return {
@@ -259,7 +244,7 @@ const deleteCategoryService = async (
       };
     }
 
-    await Category.findByIdAndDelete(categoryId);
+    await prisma.category.delete({ where: { id: categoryId } });
 
     return {
       success: true,

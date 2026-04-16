@@ -1,6 +1,4 @@
-import Coupon from "../models/coupon.model";
-import User from "../../user/models/user.model";
-import mongoose from "mongoose";
+import prisma from "../../../config/prisma";
 import Stripe from "stripe";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
@@ -11,11 +9,13 @@ export const syncStripeRedemption = async (
   couponCode: string
 ): Promise<void> => {
   try {
-    const user = await User.findById(userId).select("email fullName stripeCustomerId");
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true, fullName: true, stripeCustomerId: true },
+    });
     if (!user) return;
 
     let stripeCustomerId = user.stripeCustomerId;
-
 
     if (!stripeCustomerId) {
       const customer = await stripe.customers.create({
@@ -24,11 +24,10 @@ export const syncStripeRedemption = async (
         metadata: { userId: userId.toString() },
       });
       stripeCustomerId = customer.id;
-      await User.findByIdAndUpdate(userId, { stripeCustomerId });
+      await prisma.user.update({ where: { id: userId }, data: { stripeCustomerId } });
     }
 
     if (!stripeCustomerId) return;
-
 
     await stripe.invoiceItems.create({
       customer: stripeCustomerId,
@@ -49,7 +48,6 @@ export const syncStripeRedemption = async (
 
     console.log(`Stripe redemption synced for coupon ${couponCode.toUpperCase()} (customer: ${stripeCustomerId})`);
   } catch (err: any) {
-
     console.error("syncStripeRedemption error:", err.message);
   }
 };
@@ -79,13 +77,25 @@ export const createCouponService = async (couponData: any) => {
     const stripeCoupon = await stripe.coupons.create(stripeParams);
     stripeCouponId = stripeCoupon.id;
 
-    // 3. Now save to MongoDB
-    const coupon = new Coupon({ ...couponData, stripeCouponId });
-    await coupon.save();
+    // 3. Now save to PostgreSQL via Prisma
+    const coupon = await prisma.coupon.create({
+      data: {
+        code: couponData.code.toUpperCase(),
+        discountType: couponData.discountType,
+        discountValue: couponData.discountValue,
+        minPurchase: couponData.minPurchase || 0,
+        expiryDate: new Date(couponData.expiryDate),
+        usageLimit: couponData.usageLimit || 100,
+        limitPerUser: couponData.limitPerUser || 1,
+        isPublic: couponData.isPublic || false,
+        isActive: couponData.isActive !== undefined ? couponData.isActive : true,
+        stripeCouponId,
+      },
+    });
 
     return { statusCode: 201, success: true, message: "Coupon created and synced to Stripe successfully", data: coupon };
   } catch (error: any) {
-    // Rollback Stripe coupon if MongoDB save fails
+    // Rollback Stripe coupon if DB save fails
     if (stripeCouponId) {
       try {
         await stripe.coupons.del(stripeCouponId);
@@ -99,7 +109,7 @@ export const createCouponService = async (couponData: any) => {
 
 export const getCouponsService = async () => {
   try {
-    const coupons = await Coupon.find().sort({ createdAt: -1 });
+    const coupons = await prisma.coupon.findMany({ orderBy: { createdAt: "desc" } });
     return { statusCode: 200, success: true, message: "Coupons fetched successfully", data: coupons };
   } catch (error: any) {
     return { statusCode: 500, success: false, message: error.message || "Failed to fetch coupons", data: null };
@@ -108,23 +118,21 @@ export const getCouponsService = async () => {
 
 export const deleteCouponService = async (couponId: string) => {
   try {
-    const coupon = await Coupon.findById(couponId);
+    const coupon = await prisma.coupon.findUnique({ where: { id: couponId } });
     if (!coupon) {
       return { statusCode: 404, success: false, message: "Coupon not found", data: null };
     }
 
-    // Delete from Stripe (use the code as the Stripe coupon ID)
+    // Delete from Stripe
     try {
       await stripe.coupons.del(coupon.code.toUpperCase());
     } catch (stripeError: any) {
-      // If it's not found in Stripe, that's fine — just log it
       if (stripeError?.code !== "resource_missing") {
         console.error("Stripe coupon deletion failed:", stripeError.message);
       }
     }
 
-    // Delete from MongoDB
-    await Coupon.findByIdAndDelete(couponId);
+    await prisma.coupon.delete({ where: { id: couponId } });
 
     return { statusCode: 200, success: true, message: "Coupon deleted from DB and Stripe successfully", data: null };
   } catch (error: any) {
@@ -134,7 +142,10 @@ export const deleteCouponService = async (couponId: string) => {
 
 export const validateCouponService = async (code: string, userId: string, subtotal: number) => {
   try {
-    const coupon = await Coupon.findOne({ code: code.toUpperCase(), isActive: true });
+    const coupon = await prisma.coupon.findFirst({
+      where: { code: code.toUpperCase(), isActive: true },
+      include: { usedBy: true },
+    });
 
     if (!coupon) {
       return { statusCode: 404, success: false, message: "Invalid coupon code", data: null };
@@ -154,7 +165,7 @@ export const validateCouponService = async (code: string, userId: string, subtot
     }
 
     // Check per-user limit
-    const userUsage = coupon.usedBy.find(u => u.userId.toString() === userId);
+    const userUsage = coupon.usedBy.find((u) => u.userId === userId);
     if (userUsage && userUsage.count >= coupon.limitPerUser) {
       return { statusCode: 400, success: false, message: "You have already reached the usage limit for this coupon", data: null };
     }
@@ -167,7 +178,9 @@ export const validateCouponService = async (code: string, userId: string, subtot
 
 export const getPublicCouponsService = async () => {
   try {
-    const coupons = await Coupon.find({ isPublic: true, isActive: true, expiryDate: { $gt: new Date() } });
+    const coupons = await prisma.coupon.findMany({
+      where: { isPublic: true, isActive: true, expiryDate: { gt: new Date() } },
+    });
     return { statusCode: 200, success: true, message: "Public coupons fetched successfully", data: coupons };
   } catch (error: any) {
     return { statusCode: 500, success: false, message: error.message || "Failed to fetch public coupons", data: null };
@@ -176,7 +189,7 @@ export const getPublicCouponsService = async () => {
 
 export const updateCouponStatusService = async (couponId: string, isActive: boolean) => {
   try {
-    const coupon = await Coupon.findByIdAndUpdate(couponId, { isActive }, { new: true });
+    const coupon = await prisma.coupon.update({ where: { id: couponId }, data: { isActive } });
     return { statusCode: 200, success: true, message: "Coupon status updated", data: coupon };
   } catch (error: any) {
     return { statusCode: 500, success: false, message: error.message || "Failed to update status", data: null };

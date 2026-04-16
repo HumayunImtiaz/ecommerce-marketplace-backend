@@ -1,5 +1,4 @@
-import SiteSettings from "../modules/admin/models/site-settings.model";
-import Notification from "../modules/notification/models/notification.model";
+import prisma from "../config/prisma";
 import { getIO } from "../socket";
 import mailTransporter from "../config/mail";
 
@@ -14,7 +13,8 @@ interface AdminNotificationPayload {
 
 export const notifyAdmin = async (payload: AdminNotificationPayload) => {
   try {
-    const settings = await SiteSettings.findOne();
+    const siteSettings = await prisma.siteSettings.findFirst();
+    const settings = siteSettings?.settings as any;
     const notifications = settings?.notifications;
 
     // 1. Check if this category is enabled globally
@@ -27,12 +27,14 @@ export const notifyAdmin = async (payload: AdminNotificationPayload) => {
     // 2. Dashboard / Push Notification (Socket.io)
     const isPushEnabled = notifications?.pushNotifications ?? true;
     if (isPushEnabled) {
-      const dbNotification = await Notification.create({
-        title: payload.title,
-        message: payload.message,
-        type: payload.type,
-        relatedId: payload.relatedId,
-        relatedModel: payload.relatedModel,
+      const dbNotification = await prisma.notification.create({
+        data: {
+          title: payload.title,
+          message: payload.message,
+          type: payload.type,
+          relatedId: payload.relatedId,
+          relatedModel: payload.relatedModel,
+        },
       });
 
       const io = getIO();
@@ -45,7 +47,7 @@ export const notifyAdmin = async (payload: AdminNotificationPayload) => {
     // 3. Email Notification
     const isEmailEnabled = notifications?.emailNotifications ?? true;
     if (isEmailEnabled) {
-      const targetEmail = notifications?.notificationEmail || settings?.adminEmail || process.env.MAIL_USER;
+      const targetEmail = notifications?.notificationEmail || siteSettings?.adminEmail || process.env.MAIL_USER;
 
       if (targetEmail) {
         try {

@@ -40,7 +40,7 @@ const getUserById = async (req: Request, res: Response, next: NextFunction) => {
 const temporaryDeleteUser = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const userId = req.params.userId as string;
-    const adminId = String((req as any).authAdmin?._id || "");
+    const adminId = String((req as any).authAdmin?.id || "");
     const result = await temporaryDeleteUserService(userId, adminId);
     return res.status(result.statusCode).json({
       success: result.success, message: result.message, data: result.data,
@@ -62,7 +62,7 @@ const permanentDeleteUser = async (req: Request, res: Response, next: NextFuncti
 
 const changeAdminPassword = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const adminId = String((req as any).authAdmin?._id || "");
+    const adminId = String((req as any).authAdmin?.id || "");
     if (!adminId) return res.status(401).json({ success: false, message: "Unauthorized", data: null });
     const result = await changeAdminPasswordService(adminId, req.body);
     return res.status(result.statusCode).json({
@@ -74,7 +74,7 @@ const changeAdminPassword = async (req: Request, res: Response, next: NextFuncti
 
 const updateAdminProfile = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const adminId = String((req as any).authAdmin?._id || "");
+    const adminId = String((req as any).authAdmin?.id || "");
     if (!adminId) return res.status(401).json({ success: false, message: "Unauthorized", data: null });
     
     const updateData = { ...req.body };

@@ -29,7 +29,7 @@ export const createPaymentIntent = async (req: Request, res: Response, next: Nex
 // ── Create Order ──────────────────────────────────────────────────────────────
 export const createOrder = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const userId = String((req as RequestWithUser).authUser?._id || "");
+    const userId = String((req as RequestWithUser).authUser?.id || "");
     const result = await createOrderService(userId, req.body);
     return res.status(result.statusCode).json({
       success: result.success,
@@ -45,7 +45,7 @@ export const createOrder = async (req: Request, res: Response, next: NextFunctio
 // ── Get User Orders ───────────────────────────────────────────────────────────
 export const getUserOrders = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const userId = String((req as RequestWithUser).authUser?._id || "");
+    const userId = String((req as RequestWithUser).authUser?.id || "");
     const result = await getUserOrdersService(userId);
     return res.status(result.statusCode).json({
       success: result.success,
@@ -127,7 +127,7 @@ export const confirmOrderPayment = async (req: Request, res: Response, next: Nex
   try {
     const orderId = req.params.orderId as string;
     const { paymentIntentId } = req.body;
-    const userId = String((req as RequestWithUser).authUser?._id || "");
+    const userId = String((req as RequestWithUser).authUser?.id || "");
 
     if (!paymentIntentId) {
       return res.status(400).json({ success: false, message: "paymentIntentId is required" });

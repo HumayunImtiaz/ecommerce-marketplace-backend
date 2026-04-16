@@ -1,8 +1,8 @@
 import { NextFunction, Request, Response } from "express";
 import sendResponse, { createError, CustomError } from "../utils/apiResponse";
-import User from "../modules/user/models/user.model";
 import { verifyToken } from "../utils/jwt";
 import { ROLE, AuthRole } from "../utils/enums/role";
+import prisma from "../config/prisma";
 
 type RequestWithUser = Request & {
   loginUser?: any;
@@ -28,7 +28,9 @@ const getUserByEmailFromRequest = async (
     });
   }
 
-  const user = await User.findOne({ email }).select("+password");
+  const user = await prisma.user.findFirst({ 
+    where: { email } 
+  });
 
   if (!user) {
     return createError({
@@ -100,7 +102,7 @@ const checkUserVerifiedBeforeLogin = async (
       );
     }
 
-    const user = await User.findOne({ email });
+    const user = await prisma.user.findFirst({ where: { email } });
 
     if (!user) {
       return next();
@@ -159,7 +161,10 @@ const authenticateByRole = (role: AuthRole) => {
       }
 
       if (role === ROLE.USER) {
-        const user = await User.findOne({ _id: decoded.id, role: ROLE.USER });
+        const userId = (decoded.id || (decoded as any)._id) as string;
+        const user = await prisma.user.findFirst({
+          where: { id: userId, role: ROLE.USER }
+        });
 
         if (!user) {
           return next(
@@ -176,7 +181,10 @@ const authenticateByRole = (role: AuthRole) => {
         return next();
       }
 
-      const admin = await User.findOne({ _id: decoded.id, role: ROLE.ADMIN });
+      const adminId = (decoded.id || (decoded as any)._id) as string;
+      const admin = await prisma.user.findFirst({
+        where: { id: adminId, role: ROLE.ADMIN }
+      });
 
       if (!admin) {
         return next(
@@ -192,6 +200,7 @@ const authenticateByRole = (role: AuthRole) => {
       (req as RequestWithUser).authAdmin = admin;
       return next();
     } catch (error) {
+      console.error("Authentication Error:", error);
       return next(
         createError({
           statusCode: 401,

@@ -1,17 +1,25 @@
-import Contact, { IContact } from "../models/contact.model";
+import prisma from "../../../config/prisma";
 import { notifyAdmin } from "../../../utils/notification.utils";
-import SiteSettings from "../../admin/models/site-settings.model";
 import mailTransporter from "../../../config/mail";
 
-const createInquiry = async (data: Partial<IContact>) => {
-  const inquiry = await Contact.create(data);
+const createInquiry = async (data: any) => {
+  const inquiry = await prisma.contact.create({
+    data: {
+      name: data.name,
+      email: data.email,
+      subject: data.subject,
+      message: data.message,
+      category: data.category || "general",
+      orderNumber: data.orderNumber,
+    },
+  });
 
   // Unified Notification dispatch (Dashboard + Email + SMS simulation)
   await notifyAdmin({
     title: "New Customer Inquiry",
     message: `${data.name} sent a new message regarding ${data.subject}`,
     type: "info",
-    relatedId: inquiry._id.toString(),
+    relatedId: inquiry.id,
     relatedModel: "Contact",
     category: "customerNotifications",
   });
@@ -20,18 +28,26 @@ const createInquiry = async (data: Partial<IContact>) => {
 };
 
 const getAllInquiries = async () => {
-  return await Contact.find().sort({ createdAt: -1 });
+  return await prisma.contact.findMany({
+    orderBy: { createdAt: "desc" },
+  });
 };
 
 const updateInquiryStatus = async (id: string, isRead: boolean) => {
-  return await Contact.findByIdAndUpdate(id, { isRead }, { new: true });
+  return await prisma.contact.update({
+    where: { id },
+    data: { isRead },
+  });
 };
 
 const sendReply = async (id: string, replyMessage: string) => {
-  const inquiry = await Contact.findById(id);
+  const inquiry = await prisma.contact.findUnique({
+    where: { id },
+  });
   if (!inquiry) throw new Error("Inquiry not found");
 
-  const adminEmail = (await SiteSettings.findOne())?.adminEmail || process.env.MAIL_USER;
+  const siteSettings = await prisma.siteSettings.findFirst();
+  const adminEmail = siteSettings?.adminEmail || process.env.MAIL_USER;
 
   await mailTransporter.sendMail({
     from: process.env.MAIL_FROM,
@@ -66,9 +82,10 @@ const sendReply = async (id: string, replyMessage: string) => {
     `,
   });
 
-  inquiry.isRead = true;
-  await inquiry.save();
-  return inquiry;
+  return await prisma.contact.update({
+    where: { id },
+    data: { isRead: true },
+  });
 };
 
 export const contactService = {

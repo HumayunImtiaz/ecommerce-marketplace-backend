@@ -1,28 +1,29 @@
 import dotenv from "dotenv";
-import mongoose from "mongoose";
-import connectDB from "../config/db";
-import User from "../modules/user/models/user.model";
+import prisma from "../config/prisma";
+import bcrypt from "bcryptjs";
 
 dotenv.config();
 
 const seedAdmin = async (): Promise<void> => {
   try {
-    await connectDB();
+    const email = "admin@example.com";
+    const password = "Admin@123";
 
-    const existingAdmin: any = await User.findOne({
-      email: "admin@example.com",
+    const existingAdmin = await prisma.user.findFirst({
+      where: { email, role: "admin" },
     });
 
-    if (existingAdmin && existingAdmin.role === "admin") {
-      console.log("Admin already exists");
-      await mongoose.connection.close();
+    if (existingAdmin) {
+      console.log("Admin already exists in Neon DB");
       process.exit(0);
     }
 
-    const adminData: any = {
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const adminData = {
       fullName: "Super Admin",
-      email: "admin@example.com",
-      password: "Admin@123",
+      email,
+      password: hashedPassword,
       role: "admin",
       provider: "local",
       isVerified: true,
@@ -36,15 +37,14 @@ const seedAdmin = async (): Promise<void> => {
       emailVerificationExpires: null,
     };
 
-    const admin = new User(adminData);
-    await admin.save();
+    await prisma.user.create({
+      data: adminData,
+    });
 
-    console.log("Admin seeded successfully");
-    await mongoose.connection.close();
+    console.log("Admin seeded successfully in Neon DB");
     process.exit(0);
   } catch (error) {
     console.error("Admin seeding failed:", error);
-    await mongoose.connection.close();
     process.exit(1);
   }
 };

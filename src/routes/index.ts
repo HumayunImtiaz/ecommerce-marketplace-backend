@@ -26,8 +26,8 @@ router.get("/health", (req: Request, res: Response) => {
   });
 });
 
-router.use("/admin", adminAuthRoutes);
-router.use("/user", userAuthRoutes);
+router.use("/auth/admin", adminAuthRoutes);
+router.use("/auth/user", userAuthRoutes);
 router.use("/categories", categoryRoutes);
 router.use("/products", productRoutes);
 router.use("/upload", uploadRoutes);

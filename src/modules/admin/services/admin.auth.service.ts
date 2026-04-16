@@ -1,6 +1,7 @@
 import generateToken from "../../../utils/jwt";
 import { ROLE } from "../../../utils/enums/role";
-import User from "../../user/models/user.model";
+import prisma from "../../../config/prisma";
+import bcrypt from "bcryptjs";
 import { adminAuthValidation } from "../validations/admin.auth.validation";
 import { z } from "zod";
 
@@ -43,25 +44,29 @@ const adminLoginService = async (body: any): Promise<ServiceResponse<{
     }
 
     const { email, password } = validation.data;
-    const admin = await User.findOne({ email, role: ROLE.ADMIN }).select("+password");
+    const admin = await prisma.user.findFirst({
+      where: { email, role: ROLE.ADMIN },
+    });
 
-    if (!admin) return { success: false, statusCode: 401, message: "Invalid admin email or password", data: null, errors: [{ field: "email", message: "Invalid email or password" }] };
+    if (!admin || !admin.password) return { success: false, statusCode: 401, message: "Invalid admin email or password", data: null, errors: [{ field: "email", message: "Invalid email or password" }] };
 
-    const isPasswordMatched = await admin.comparePassword(password);
+    const isPasswordMatched = await bcrypt.compare(password, admin.password);
     if (!isPasswordMatched) return { success: false, statusCode: 401, message: "Invalid admin email or password", data: null, errors: [{ field: "password", message: "Invalid email or password" }] };
 
     // ── Record last login time ──
-    admin.lastLogin = new Date();
-    await admin.save();
+    const updatedAdmin = await prisma.user.update({
+      where: { id: admin.id },
+      data: { lastLogin: new Date() }
+    });
 
-    const token = generateToken({ id: admin._id.toString(), email: admin.email, role: ROLE.ADMIN });
+    const token = generateToken({ id: admin.id, email: admin.email, role: ROLE.ADMIN });
 
     return {
       success: true,
       statusCode: 200,
       message: "Admin login successful",
       data: {
-        admin: { id: admin._id, fullName: admin.fullName, email: admin.email, bio: admin.bio ?? null, lastLogin: admin.lastLogin },
+        admin: { id: updatedAdmin.id, fullName: updatedAdmin.fullName, email: updatedAdmin.email, bio: updatedAdmin.bio ?? null, lastLogin: updatedAdmin.lastLogin },
         token,
       },
     };
@@ -74,21 +79,22 @@ const adminLoginService = async (body: any): Promise<ServiceResponse<{
 // ─── Get All Users ────────────────────────────────────────────────────────────
 const getAllUsersService = async (): Promise<ServiceResponse> => {
   try {
-    const users = await User.find({ role: ROLE.USER })
-      .select("fullName email avatar role isVerified isDeleted deletionRequested deletedAt deletedBy provider createdAt updatedAt")
-      .sort({ createdAt: -1 });
+    const users = await prisma.user.findMany({
+      where: { role: ROLE.USER },
+      select: {
+        id: true, fullName: true, email: true, avatar: true,
+        role: true, isVerified: true, isDeleted: true,
+        deletionRequested: true, deletedAt: true, deletedBy: true,
+        provider: true, createdAt: true, updatedAt: true
+      },
+      orderBy: { createdAt: "desc" }
+    });
 
     return {
       success: true,
       statusCode: 200,
       message: "Users fetched successfully",
-      data: users.map((u: any) => ({
-        id: u._id, fullName: u.fullName, email: u.email, avatar: u.avatar,
-        role: u.role, isVerified: u.isVerified, isDeleted: u.isDeleted,
-        deletionRequested: u.deletionRequested,
-        deletedAt: u.deletedAt, deletedBy: u.deletedBy, provider: u.provider,
-        createdAt: u.createdAt, updatedAt: u.updatedAt,
-      })),
+      data: users.map(u => ({ ...u })), // Return mapped users directly
     };
   } catch (error: any) {
     console.error("getAllUsersService error:", error);
@@ -102,14 +108,14 @@ const temporaryDeleteUserService = async (userId: string, adminId: string): Prom
     if (!userId?.trim()) return { success: false, statusCode: 400, message: "User ID is required", data: null, errors: [{ field: "userId", message: "User ID is required" }] };
     if (!adminId?.trim()) return { success: false, statusCode: 401, message: "Unauthorized", data: null };
 
-    const user = await User.findOne({ _id: userId, role: ROLE.USER });
+    const user = await prisma.user.findFirst({ where: { id: userId, role: ROLE.USER } });
     if (!user) return { success: false, statusCode: 404, message: `No user found with ID "${userId}"`, data: null, errors: [{ field: "userId", message: `No user found with ID "${userId}"` }] };
     if (user.isDeleted) return { success: false, statusCode: 400, message: "User is already temporarily deleted", data: null };
 
-    user.isDeleted = true;
-    user.deletedAt = new Date();
-    user.deletedBy = adminId;
-    await user.save();
+    await prisma.user.update({
+      where: { id: userId },
+      data: { isDeleted: true, deletedAt: new Date(), deletedBy: adminId }
+    });
 
     return { success: true, statusCode: 200, message: "User temporarily deleted successfully", data: null };
   } catch (error: any) {
@@ -123,10 +129,10 @@ const permanentDeleteUserService = async (userId: string): Promise<ServiceRespon
   try {
     if (!userId?.trim()) return { success: false, statusCode: 400, message: "User ID is required", data: null };
 
-    const user = await User.findOne({ _id: userId, role: ROLE.USER });
+    const user = await prisma.user.findFirst({ where: { id: userId, role: ROLE.USER } });
     if (!user) return { success: false, statusCode: 404, message: `No user found with ID "${userId}"`, data: null };
 
-    await User.findByIdAndDelete(userId);
+    await prisma.user.delete({ where: { id: userId } });
     return { success: true, statusCode: 200, message: "User permanently deleted successfully", data: null };
   } catch (error: any) {
     console.error("permanentDeleteUserService error:", error);
@@ -144,15 +150,15 @@ const changeAdminPasswordService = async (adminId: string, body: any): Promise<S
     }
 
     const { currentPassword, newPassword } = validation.data;
-    const admin = await User.findOne({ _id: adminId, role: ROLE.ADMIN }).select("+password");
-    if (!admin) return { success: false, statusCode: 404, message: "Admin not found", data: null };
+    const admin = await prisma.user.findFirst({ where: { id: adminId, role: ROLE.ADMIN } });
+    if (!admin || !admin.password) return { success: false, statusCode: 404, message: "Admin not found", data: null };
 
-    const isMatch = await admin.comparePassword(currentPassword);
+    const isMatch = await bcrypt.compare(currentPassword, admin.password);
     if (!isMatch) return { success: false, statusCode: 401, message: "Current password is incorrect", data: null, errors: [{ field: "currentPassword", message: "Current password is incorrect" }] };
     if (currentPassword === newPassword) return { success: false, statusCode: 400, message: "New password must be different", data: null, errors: [{ field: "newPassword", message: "New password must be different from current password" }] };
 
-    admin.password = newPassword;
-    await admin.save();
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await prisma.user.update({ where: { id: adminId }, data: { password: hashedPassword } });
 
     return { success: true, statusCode: 200, message: "Password changed successfully", data: null };
   } catch (error: any) {
@@ -173,27 +179,30 @@ const updateAdminProfileService = async (adminId: string, body: any): Promise<Se
     }
 
     const validData = validation.data;
-    const admin = await User.findOne({ _id: adminId, role: ROLE.ADMIN });
+    const admin = await prisma.user.findFirst({ where: { id: adminId, role: ROLE.ADMIN } });
     if (!admin) return { success: false, statusCode: 404, message: "Admin not found", data: null };
 
     // Email uniqueness check
     if (validData.email && validData.email !== admin.email) {
-      const emailTaken = await User.findOne({ email: validData.email, _id: { $ne: adminId } });
+      const emailTaken = await prisma.user.findFirst({ where: { email: validData.email, id: { not: adminId } } });
       if (emailTaken) return { success: false, statusCode: 409, message: "Email already in use", data: null, errors: [{ field: "email", message: "This email is already taken" }] };
     }
 
-    if (validData.fullName !== undefined) admin.fullName = validData.fullName;
-    if (validData.email !== undefined) admin.email = validData.email;
-    if (validData.bio !== undefined) admin.bio = validData.bio ?? null;
-    if (body.avatar !== undefined) admin.avatar = body.avatar;
-
-    await admin.save();
+    const updatedAdmin = await prisma.user.update({
+      where: { id: adminId },
+      data: {
+        fullName: validData.fullName !== undefined ? validData.fullName : admin.fullName,
+        email: validData.email !== undefined ? validData.email : admin.email,
+        bio: validData.bio !== undefined ? validData.bio : admin.bio,
+        avatar: body.avatar !== undefined ? body.avatar : admin.avatar,
+      }
+    });
 
     return {
       success: true,
       statusCode: 200,
       message: "Profile updated successfully",
-      data: { id: admin._id, fullName: admin.fullName, email: admin.email, bio: admin.bio, lastLogin: admin.lastLogin, avatar: admin.avatar },
+      data: { id: updatedAdmin.id, fullName: updatedAdmin.fullName, email: updatedAdmin.email, bio: updatedAdmin.bio, lastLogin: updatedAdmin.lastLogin, avatar: updatedAdmin.avatar },
     };
   } catch (error: any) {
     console.error("updateAdminProfileService error:", error);
@@ -212,7 +221,7 @@ const addUserService = async (body: any): Promise<ServiceResponse<null>> => {
 
     const { fullName, email, password, provider } = validation.data;
 
-    const existingUser = await User.findOne({ email });
+    const existingUser = await prisma.user.findFirst({ where: { email } });
     if (existingUser) {
       return {
         success: false,
@@ -223,16 +232,18 @@ const addUserService = async (body: any): Promise<ServiceResponse<null>> => {
       };
     }
 
-    const user = new User({
-      fullName,
-      email,
-      password,
-      provider,
-      role: ROLE.USER,
-      isVerified: true, // Admin-added users are verified by default
-    });
+    const hashedPassword = password ? await bcrypt.hash(password, 10) : undefined;
 
-    await user.save();
+    await prisma.user.create({
+      data: {
+        fullName,
+        email,
+        password: hashedPassword,
+        provider,
+        role: ROLE.USER,
+        isVerified: true, // Admin-added users are verified by default
+      }
+    });
 
     return { success: true, statusCode: 201, message: "User added successfully", data: null };
   } catch (error: any) {
@@ -246,8 +257,15 @@ const getUserByIdService = async (userId: string): Promise<ServiceResponse> => {
   try {
     if (!userId?.trim()) return { success: false, statusCode: 400, message: "User ID is required", data: null };
 
-    const user = await User.findOne({ _id: userId, role: ROLE.USER })
-      .select("fullName email avatar role isVerified isDeleted deletionRequested deletedAt deletedBy provider lastLogin createdAt updatedAt");
+    const user = await prisma.user.findFirst({ 
+      where: { id: userId, role: ROLE.USER },
+      select: {
+        id: true, fullName: true, email: true, avatar: true,
+        role: true, isVerified: true, isDeleted: true,
+        deletionRequested: true, deletedAt: true, deletedBy: true,
+        provider: true, lastLogin: true, createdAt: true, updatedAt: true
+      }
+    });
     
     if (!user) return { success: false, statusCode: 404, message: `User with ID "${userId}" not found`, data: null };
 
@@ -255,13 +273,7 @@ const getUserByIdService = async (userId: string): Promise<ServiceResponse> => {
       success: true,
       statusCode: 200,
       message: "User fetched successfully",
-      data: {
-        id: user._id, fullName: user.fullName, email: user.email, avatar: user.avatar,
-        role: user.role, isVerified: user.isVerified, isDeleted: user.isDeleted,
-        deletionRequested: user.deletionRequested,
-        deletedAt: user.deletedAt, deletedBy: user.deletedBy, provider: user.provider,
-        lastLogin: user.lastLogin, createdAt: user.createdAt, updatedAt: user.updatedAt,
-      },
+      data: { ...user },
     };
   } catch (error: any) {
     console.error("getUserByIdService error:", error);
