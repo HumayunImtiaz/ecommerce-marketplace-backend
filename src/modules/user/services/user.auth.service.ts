@@ -27,7 +27,7 @@ const emailVerificationExpiryMinutes = Number(
   process.env.EMAIL_VERIFICATION_EXPIRES_MINUTES || 60
 );
 
-const r9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8 = Number(
+const resetPasswordExpiryMinutes = Number(
   process.env.RESET_PASSWORD_EXPIRES_MINUTES || 10
 );
 
@@ -624,7 +624,7 @@ const forgotPasswordService = async (
       data: {
         resetPasswordToken: resetToken,
         resetPasswordExpires: new Date(
-          Date.now() + r9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8 * 60 * 1000
+          Date.now() + resetPasswordExpiryMinutes * 60 * 1000
         ),
       },
     });
@@ -649,7 +649,7 @@ const forgotPasswordService = async (
         Reset Password
       </a>
       <p style="margin: 24px 0 0; color: #6b7280; font-size: 13px;">
-        This link will expire in ${r9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8} minutes.
+        This link will expire in ${resetPasswordExpiryMinutes} minutes.
       </p>
     </div>
   </div>
