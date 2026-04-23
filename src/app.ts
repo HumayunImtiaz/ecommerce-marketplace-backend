@@ -11,17 +11,21 @@ const app: Application = express();
 const allowedOrigins = [
   process.env.CLIENT_URL,
   process.env.ADMIN_CLIENT_URL,
-].filter(Boolean) as string[];
+  "http://localhost:3000",
+  "http://localhost:3001",
+].filter(Boolean).map(url => url?.replace(/\/$/, "")) as string[];
 
 app.use(
   cors({
     origin: (origin, callback) => {
-
       if (!origin) return callback(null, true);
-
-      if (allowedOrigins.includes(origin)) {
+      
+      const normalizedOrigin = origin.replace(/\/$/, "");
+      
+      if (allowedOrigins.includes(normalizedOrigin) || allowedOrigins.some(ao => normalizedOrigin.startsWith(ao))) {
         callback(null, true);
       } else {
+        console.warn(`⚠️ CORS blocked: ${origin}. Allowed:`, allowedOrigins);
         callback(new Error(`CORS blocked: ${origin} is not allowed`));
       }
     },
