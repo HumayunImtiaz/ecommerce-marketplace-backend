@@ -106,7 +106,7 @@ export const deductOrderStock = async (orderId: string) => {
             if (newQty <= stock.lowStockThreshold) {
               const product = await tx.product.findUnique({ where: { id: item.productId } });
               const variantDetails = [item.selectedColor, item.selectedSize].filter(Boolean).join(" - ");
-              await notifyAdmin({
+              notifyAdmin({
                 title: "Low Stock Alert",
                 message: `Product "${product?.name || item.name}" ${variantDetails ? `(${variantDetails})` : ""} is low on stock (${newQty} left).`,
                 type: "warning",
@@ -325,7 +325,7 @@ export const createOrderService = async (
     }
 
     // New Order Alert
-    await notifyAdmin({
+    notifyAdmin({
       title: "New Order",
       message: `Order ${order.orderNumber} placed.`,
       type: "success",
@@ -460,7 +460,7 @@ export const updateOrderStatusService = async (
     });
 
     // Admin notification
-    await notifyAdmin({
+    notifyAdmin({
       title: "Order Status Updated",
       message: `Order ${order.orderNumber} is now ${status.toUpperCase()}.`,
       type: "info",
