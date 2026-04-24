@@ -50,25 +50,28 @@ export const notifyAdmin = async (payload: AdminNotificationPayload) => {
       const targetEmail = notifications?.notificationEmail || siteSettings?.adminEmail || process.env.MAIL_USER;
 
       if (targetEmail) {
-        try {
-          await mailTransporter.sendMail({
-            from: process.env.MAIL_FROM || `"LuxeCart Admin" <${process.env.MAIL_USER}>`,
-            to: targetEmail,
-            subject: `Admin Alert: ${payload.title}`,
-            html: `
-              <div style="font-family: sans-serif; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
-                <h2 style="color: #4f46e5;">LuxeCart Admin Notification</h2>
-                <p><strong>${payload.title}</strong></p>
-                <p>${payload.message}</p>
-                <hr />
-                <p style="font-size: 12px; color: #666;">You received this because Email Notifications are enabled in your admin settings.</p>
-              </div>
-            `,
-          });
-          console.log(`[Email] Notification sent to ${targetEmail}`);
-        } catch (emailError) {
-          console.error("Failed to send admin notification email:", emailError);
-        }
+        // Fire and forget email to avoid blocking the main thread
+        (async () => {
+          try {
+            await mailTransporter.sendMail({
+              from: process.env.MAIL_FROM || `"LuxeCart Admin" <${process.env.MAIL_USER}>`,
+              to: targetEmail,
+              subject: `Admin Alert: ${payload.title}`,
+              html: `
+                <div style="font-family: sans-serif; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+                  <h2 style="color: #4f46e5;">LuxeCart Admin Notification</h2>
+                  <p><strong>${payload.title}</strong></p>
+                  <p>${payload.message}</p>
+                  <hr />
+                  <p style="font-size: 12px; color: #666;">You received this because Email Notifications are enabled in your admin settings.</p>
+                </div>
+              `,
+            });
+            console.log(`[Email] Notification sent to ${targetEmail}`);
+          } catch (emailError: any) {
+            console.error("Failed to send admin notification email:", emailError.message);
+          }
+        })();
       }
     }
 
