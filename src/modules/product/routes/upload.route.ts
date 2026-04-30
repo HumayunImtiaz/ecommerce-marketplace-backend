@@ -33,7 +33,7 @@ router.post(
 
     const urls = files.map(
       (file) =>
-        `${process.env.SERVER_URL}/uploads/products/${file.filename}`
+        `/uploads/products/${file.filename}`
     );
 
     return res.status(200).json({
