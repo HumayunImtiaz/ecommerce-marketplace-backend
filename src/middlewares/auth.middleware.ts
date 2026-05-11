@@ -149,12 +149,12 @@ const authenticateByRole = (role: AuthRole) => {
       const token = authHeader.split(" ")[1];
       const decoded = verifyToken(token);
 
-      if (decoded.role !== role) {
+      if (decoded.role?.toLowerCase() !== role.toLowerCase()) {
         return next(
           createError({
             statusCode: 401,
             success: false,
-            message: "Unauthorized access",
+            message: "Unauthorized access - Role mismatch",
             data: null,
           })
         );
