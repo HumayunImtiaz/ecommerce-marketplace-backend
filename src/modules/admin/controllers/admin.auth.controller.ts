@@ -81,6 +81,11 @@ const updateAdminProfile = async (req: Request, res: Response, next: NextFunctio
     if (req.file) {
       updateData.avatar = req.file.filename;
     }
+    
+    // Support both name and fullName from frontend
+    if (updateData.name && !updateData.fullName) {
+      updateData.fullName = updateData.name;
+    }
 
     const result = await updateAdminProfileService(adminId, updateData);
     return res.status(result.statusCode).json({
