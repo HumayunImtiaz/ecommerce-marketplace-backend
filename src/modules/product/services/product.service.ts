@@ -477,7 +477,7 @@ const deleteProductService = async (productId: string): Promise<ServiceResponse>
     });
 
     if (categoryId) {
-      const remainingProducts = await prisma.product.count({ where: { categoryId } });
+      const remainingProducts = await prisma.product.count({ where: { categoryId, isDeleted: false } });
       if (remainingProducts === 0) {
         await prisma.category.delete({ where: { id: categoryId } });
         console.log(`Auto-cleaned empty category: ${categoryId}`);
@@ -531,7 +531,7 @@ const bulkDeleteProductService = async (productIds: string[]): Promise<ServiceRe
 
     // Auto-cleanup categories
     for (const catId of categoryIds) {
-      const remaining = await prisma.product.count({ where: { categoryId: catId } });
+      const remaining = await prisma.product.count({ where: { categoryId: catId, isDeleted: false } });
       if (remaining === 0) {
         await prisma.category.delete({ where: { id: catId } });
         console.log(`Bulk auto-cleaned empty category: ${catId}`);

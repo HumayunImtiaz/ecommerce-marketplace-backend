@@ -89,27 +89,38 @@ const createCategoryService = async (body: any): Promise<ServiceResponse> => {
 
 const getAllCategoriesService = async (hideEmpty: boolean = false): Promise<ServiceResponse> => {
   try {
-    let categories;
+    // 1. Get all categories
+    const allCategories = await prisma.category.findMany({
+      orderBy: { createdAt: "desc" },
+    });
+
+    // 2. Filter out and DELETE categories that have NO active products
+    const categoriesWithProducts = [];
+    for (const category of allCategories) {
+      const productCount = await prisma.product.count({
+        where: { categoryId: category.id, isDeleted: false }
+      });
+
+      if (productCount === 0) {
+        // Automatically delete if empty
+        await prisma.category.delete({ where: { id: category.id } });
+        console.log(`Auto-deleted empty category: ${category.name}`);
+      } else {
+        categoriesWithProducts.push(category);
+      }
+    }
+
+    // 3. Apply hideEmpty filter if requested
+    let finalCategories = categoriesWithProducts;
     if (hideEmpty) {
-      // Get categories that have at least one product
-      categories = await prisma.category.findMany({
-        where: {
-          isActive: true,
-          products: { some: {} },
-        },
-        orderBy: { createdAt: "desc" },
-      });
-    } else {
-      categories = await prisma.category.findMany({
-        orderBy: { createdAt: "desc" },
-      });
+      finalCategories = categoriesWithProducts.filter(cat => cat.isActive);
     }
 
     return {
       success: true,
       statusCode: 200,
-      message: "Categories fetched successfully",
-      data: categories,
+      message: "Categories fetched successfully and empty ones cleaned up",
+      data: finalCategories,
     };
   } catch (error: any) {
     console.error("getAllCategoriesService error:", error);
