@@ -8,6 +8,30 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum UserRole {
+  USER
+  VENDOR
+  ADMIN
+}
+
+enum VendorStatus {
+  PENDING
+  APPROVED
+  SUSPENDED
+}
+
+enum EarningStatus {
+  PENDING
+  PAID
+}
+
+enum PayoutStatus {
+  PENDING
+  APPROVED
+  PAID
+  REJECTED
+}
+
 model User {
   id                         String        @id @default(uuid())
   fullName                   String
@@ -17,7 +41,7 @@ model User {
   bio                        String?
   phone                      String?
   dateOfBirth                String?
-  role                       String        @default("user")
+  role                       UserRole      @default(USER)
   isVerified                 Boolean       @default(false)
   isDeleted                  Boolean       @default(false)
   deletionRequested          Boolean       @default(false)
@@ -42,6 +66,7 @@ model User {
   orders                     Order[]
   reviews                    Review[]
   wishlist                   Wishlist?
+  vendor                     Vendor?
 }
 
 model Address {
@@ -71,6 +96,24 @@ model Category {
   products    Product[]
 }
 
+model Vendor {
+  id             String          @id @default(uuid())
+  userId         String          @unique
+  businessName   String
+  slug           String          @unique
+  logo           String?
+  description    String?
+  status         VendorStatus    @default(PENDING)
+  commissionRate Decimal         @default(10.0)
+  bankDetails    Json?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  products       Product[]
+  earnings       VendorEarning[]
+  payoutRequests PayoutRequest[]
+}
+
 model Product {
   id            String         @id @default(uuid())
   name          String
@@ -80,6 +123,7 @@ model Product {
   comparePrice  Float?
   sku           String         @unique
   categoryId    String
+  vendorId      String?
   tags          String[]
   images        String[]
   features      String[]
@@ -93,6 +137,7 @@ model Product {
   cartItems     CartItem[]
   orderItems    OrderItem[]
   category      Category       @relation(fields: [categoryId], references: [id])
+  vendor        Vendor?        @relation(fields: [vendorId], references: [id], onDelete: Restrict)
   reviews       Review[]
   variants      Variant[]
   wishlistItems WishlistItem[]
@@ -139,25 +184,26 @@ model Review {
 }
 
 model Order {
-  id                    String         @id @default(uuid())
+  id                    String          @id @default(uuid())
   userId                String
-  orderNumber           String         @unique
+  orderNumber           String          @unique
   subtotal              Float
   tax                   Float
   shippingCost          Float
   total                 Float
   paymentMethod         String
-  paymentStatus         String         @default("pending")
+  paymentStatus         String          @default("pending")
   stripePaymentIntentId String?
-  orderStatus           String         @default("pending")
+  orderStatus           String          @default("pending")
   couponCode            String?
-  discountAmount        Float          @default(0)
-  inventoryUpdated      Boolean        @default(false)
-  createdAt             DateTime       @default(now())
-  updatedAt             DateTime       @updatedAt
-  user                  User           @relation(fields: [userId], references: [id])
+  discountAmount        Float           @default(0)
+  inventoryUpdated      Boolean         @default(false)
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+  user                  User            @relation(fields: [userId], references: [id])
   addresses             OrderAddress[]
   items                 OrderItem[]
+  vendorEarnings        VendorEarning[]
 }
 
 model OrderAddress {
@@ -185,6 +231,29 @@ model OrderItem {
   selectedSize  String?
   order         Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product       Product @relation(fields: [productId], references: [id])
+}
+
+model VendorEarning {
+  id               String        @id @default(uuid())
+  vendorId         String
+  orderId          String
+  grossAmount      Float
+  commissionAmount Float
+  netAmount        Float
+  status           EarningStatus @default(PENDING)
+  createdAt        DateTime      @default(now())
+  vendor           Vendor        @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  order            Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+}
+
+model PayoutRequest {
+  id          String       @id @default(uuid())
+  vendorId    String
+  amount      Float
+  status      PayoutStatus @default(PENDING)
+  requestedAt DateTime     @default(now())
+  resolvedAt  DateTime?
+  vendor      Vendor       @relation(fields: [vendorId], references: [id], onDelete: Cascade)
 }
 
 model Cart {

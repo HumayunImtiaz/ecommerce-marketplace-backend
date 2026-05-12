@@ -5,6 +5,7 @@ import { getIO } from "../../../socket";
 import { z } from "zod";
 import mailTransporter from "../../../config/mail";
 import { notifyAdmin } from "../../../utils/notification.utils";
+import { calculateAndSaveEarning } from "../../vendor/services/payout.service";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
@@ -334,6 +335,11 @@ export const createOrderService = async (
       category: "orderNotifications",
     });
 
+    // Notify vendors about the new order
+    notifyVendorsOfNewOrder(order.id).catch(err => 
+      console.error(`[Notification] Failed to notify vendors for order ${order.id}:`, err.message)
+    );
+
     return {
       success: true,
       statusCode: 201,
@@ -459,6 +465,13 @@ export const updateOrderStatusService = async (
       data: updateData,
     });
 
+    // Auto calculate vendor earnings on delivery
+    if (status.toLowerCase() === "delivered") {
+      await calculateAndSaveEarning(orderId).catch(err => 
+        console.error(`[Finance] Earning calculation failed for ${orderId}:`, err.message)
+      );
+    }
+
     // Admin notification
     notifyAdmin({
       title: "Order Status Updated",
@@ -555,6 +568,96 @@ const sendOrderStatusUpdateEmail = async (
     console.log(`✉️  Order status (${status}) email sent to ${email}`);
   } catch (err: any) {
     console.error(`Email sending FAILED to ${email}:`, err.message);
+  }
+};
+
+const notifyVendorsOfNewOrder = async (orderId: string) => {
+  try {
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      include: {
+        items: {
+          include: {
+            product: {
+              include: {
+                vendor: {
+                  include: { user: true }
+                }
+              }
+            }
+          }
+        }
+      }
+    });
+
+    if (!order) return;
+
+    const vendorMap = new Map<string, { email: string; businessName: string; items: any[] }>();
+
+    for (const item of order.items) {
+      const vendor = item.product?.vendor;
+      if (vendor?.user?.email) {
+        const email = vendor.user.email;
+        if (!vendorMap.has(email)) {
+          vendorMap.set(email, {
+            email,
+            businessName: vendor.businessName || vendor.user.fullName || "Vendor",
+            items: []
+          });
+        }
+        vendorMap.get(email)!.items.push(item);
+      }
+    }
+
+    const clientUrl = (process.env.CLIENT_URL || "http://localhost:3000").replace(/\/$/, "");
+
+    for (const [email, data] of vendorMap.entries()) {
+      const itemsHtml = data.items.map(item => `
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #eee;">${item.name}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: center;">${item.quantity}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: right;">$${Number(item.price).toFixed(2)}</td>
+        </tr>
+      `).join("");
+
+      await mailTransporter.sendMail({
+        from: process.env.MAIL_FROM || `"LuxaCart Marketplace" <${process.env.MAIL_USER}>`,
+        to: email,
+        subject: `New Order Received: ${order.orderNumber}`,
+        html: `
+          <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #eee; padding: 20px; border-radius: 10px;">
+            <h2 style="color: #002147;">Hello ${data.businessName},</h2>
+            <p>You have received a new order <strong>${order.orderNumber}</strong> for your products.</p>
+            
+            <table style="width: 100%; border-collapse: collapse; margin-top: 20px;">
+              <thead>
+                <tr style="background: #f8f8f8;">
+                  <th style="padding: 8px; text-align: left;">Product</th>
+                  <th style="padding: 8px; text-align: center;">Qty</th>
+                  <th style="padding: 8px; text-align: right;">Price</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${itemsHtml}
+              </tbody>
+            </table>
+            
+            <div style="margin-top: 30px; text-align: center;">
+              <a href="${clientUrl}/vendor/orders" style="background: #eb9a05; color: #002147; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold;">
+                View Order in Dashboard
+              </a>
+            </div>
+            
+            <p style="margin-top: 30px; font-size: 12px; color: #888;">
+              Please start processing this order as soon as possible.
+            </p>
+          </div>
+        `
+      });
+      console.log(`✉️  Vendor notification sent to ${email} for order ${order.orderNumber}`);
+    }
+  } catch (error: any) {
+    console.error(`[Notification] Vendor email failed:`, error.message);
   }
 };
 

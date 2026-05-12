@@ -8,6 +8,7 @@ type RequestWithUser = Request & {
   loginUser?: any;
   authUser?: any;
   authAdmin?: any;
+  authVendor?: any;
 };
 
 const getUserByEmailFromRequest = async (
@@ -181,6 +182,39 @@ const authenticateByRole = (role: AuthRole) => {
         return next();
       }
 
+      if (role === ROLE.VENDOR) {
+        const vendorUserId = (decoded.id || (decoded as any)._id) as string;
+        const user = await prisma.user.findFirst({
+          where: { id: vendorUserId, role: ROLE.VENDOR },
+          include: { vendor: true },
+        });
+
+        if (!user || !user.vendor) {
+          return next(
+            createError({
+              statusCode: 404,
+              success: false,
+              message: "Vendor not found",
+              data: null,
+            })
+          );
+        }
+
+        if (user.vendor.status !== "APPROVED") {
+          return next(
+            createError({
+              statusCode: 403,
+              success: false,
+              message: "Vendor account is not approved yet",
+              data: null,
+            })
+          );
+        }
+
+        (req as RequestWithUser).authVendor = { ...user, vendor: user.vendor };
+        return next();
+      }
+
       const adminId = (decoded.id || (decoded as any)._id) as string;
       const admin = await prisma.user.findFirst({
         where: { id: adminId, role: ROLE.ADMIN }
@@ -215,6 +249,7 @@ const authenticateByRole = (role: AuthRole) => {
 
 const authenticateUser = authenticateByRole(ROLE.USER);
 const authenticateAdmin = authenticateByRole(ROLE.ADMIN);
+const authenticateVendor = authenticateByRole(ROLE.VENDOR);
 
 export {
   getUserByEmailFromRequest,
@@ -222,4 +257,5 @@ export {
   checkUserVerifiedBeforeLogin,
   authenticateUser,
   authenticateAdmin,
+  authenticateVendor,
 };
