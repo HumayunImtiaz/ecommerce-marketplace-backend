@@ -11,8 +11,11 @@ import {
   getPlatformAnalyticsService,
   getVendorDetailService,
   getVendorOrdersService,
+  getVendorProductsService,
   updateVendorProfileService,
   getVendorOrderDetailService,
+  getVendorAnalyticsService,
+  getPublicVendorProfileService,
 } from "../services/vendor.service";
 
 // ── User: Register as vendor ──
@@ -184,6 +187,23 @@ const getVendorOrders = async (req: Request, res: Response, next: NextFunction) 
   }
 };
 
+const getVendorProducts = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const userId = (req as any).authVendor?.user?.id || (req as any).user?.id || (req as any).authUser?.id;
+    // Actually authenticateVendor sets req.authVendor to { ...user, vendor: user.vendor }
+    // So user ID is req.authVendor.id
+    const uid = (req as any).authVendor?.id;
+    const result = await getVendorProductsService(uid);
+    return res.status(result.statusCode).json({
+      success: result.success,
+      message: result.message,
+      data: result.data,
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
 const updateVendorProfile = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const userId = (req as any).user.id;
@@ -213,6 +233,34 @@ const getVendorOrderDetail = async (req: Request, res: Response, next: NextFunct
   }
 };
 
+const getVendorAnalytics = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const vendorId = (req as any).authVendor?.vendor?.id;
+    const result = await getVendorAnalyticsService(vendorId);
+    return res.status(result.statusCode).json({
+      success: result.success,
+      message: result.message,
+      data: result.data,
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
+const getPublicVendorProfile = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const slug = String(req.params.slug);
+    const result = await getPublicVendorProfileService(slug);
+    return res.status(result.statusCode).json({
+      success: result.success,
+      message: result.message,
+      data: result.data,
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
 export {
   registerVendor,
   getVendorProfile,
@@ -225,6 +273,9 @@ export {
   getPlatformAnalytics,
   getVendorDetail,
   getVendorOrders,
+  getVendorProducts,
   updateVendorProfile,
   getVendorOrderDetail,
+  getVendorAnalytics,
+  getPublicVendorProfile,
 };

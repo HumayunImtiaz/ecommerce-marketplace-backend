@@ -11,6 +11,7 @@ import {
   getEmailPreferences,
   updateEmailPreferences,
   updateUserProfile,
+  getMe,
 } from "../controllers/user.auth.controller";
 import {
   checkLocalProviderBeforeLogin,
@@ -21,6 +22,8 @@ import { storageData } from "../../../utils/multer";
 import addressRoutes from "./address.routes";
 
 const router = Router();
+
+router.get("/me", authenticateUser, getMe);
 
 router.post(
   "/register",

@@ -15,12 +15,12 @@ const startServer = async (): Promise<void> => {
 
     const httpServer = http.createServer(app);
     
-    // Setup Socket.IO
+    
     setupSocketIO(httpServer);
 
     httpServer.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
-    });
+          });
   } catch (error) {
     console.error("Database connection failed:", error);
     process.exit(1);

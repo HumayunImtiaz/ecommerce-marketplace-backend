@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import prisma from "../../../config/prisma";
 import { requestPayout } from "../services/payout.service";
 import mailTransporter from "../../../config/mail";
+import { notifyVendor } from "../../../socket";
 
 // ─── Vendor Endpoints ────────────────────────────────────────────────────────
 
@@ -110,6 +111,13 @@ export const approvePayout = async (req: Request, res: Response) => {
         `
       }).catch(e => console.error("Payout Email failed:", e.message));
     }
+
+    // Trigger Real-time Notification
+    notifyVendor(payout.vendorId, "payout_approved", {
+      amount: payout.amount,
+      message: `Your payout of Rs. ${Number(payout.amount).toLocaleString()} has been processed.`,
+      type: "payout"
+    });
 
     res.json({ success: true, data: updated, message: "Payout marked as PAID" });
   } catch (error: any) {

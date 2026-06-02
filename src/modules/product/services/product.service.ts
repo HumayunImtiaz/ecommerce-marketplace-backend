@@ -2,6 +2,8 @@ import prisma from "../../../config/prisma";
 import { productValidation } from "../validations/product.validation";
 import slugify from "slugify";
 import { notifySubscribersService } from "../../newsletter/services/newsletter.service";
+import mailTransporter from "../../../config/mail";
+import { cleanupEmptyCategoriesService } from "./category.service";
 
 type FieldError = { field: string; message: string };
 type ServiceResponse<T = unknown> = {
@@ -65,6 +67,7 @@ const buildProductDetail = async (product: any) => {
       price: v.price,
       stock: v.stock ? { quantity: v.stock.quantity, status: v.stock.status } : null,
     })),
+    vendor: product.vendor,
     createdAt: product.createdAt,
     updatedAt: product.updatedAt,
   };
@@ -74,6 +77,7 @@ const buildProductDetail = async (product: any) => {
 const createProductService = async (body: any): Promise<ServiceResponse> => {
   try {
     const isDraft = body.isActive === false;
+    const vendorId = body.vendorId; // Preserve before Zod strips it
 
     if (isDraft && (!body.name || body.name.trim().length < 2)) {
       return { success: false, statusCode: 400, message: "Draft requires at least a product name", data: null };
@@ -81,6 +85,8 @@ const createProductService = async (body: any): Promise<ServiceResponse> => {
 
     let validData: any;
     const dataToValidate = { ...body };
+    delete dataToValidate.vendorId; // Remove so Zod doesn't complain
+    delete dataToValidate.totalStock; // Not in Zod schema, remove to avoid issues
     if (!dataToValidate.categoryId && dataToValidate.category) {
       dataToValidate.categoryId = dataToValidate.category;
     }
@@ -136,11 +142,13 @@ const createProductService = async (body: any): Promise<ServiceResponse> => {
         comparePrice: validData.comparePrice || null,
         sku,
         categoryId: categoryId,
+        vendorId: vendorId || null,
         tags: validData.tags || [],
         images: validData.images || [],
         features: validData.features || [],
-        isActive: validData.isActive ?? true,
+        isActive: vendorId ? false : (validData.isActive ?? true),
         isFeatured: validData.isFeatured ?? false,
+        productStatus: vendorId ? "PENDING_REVIEW" : "APPROVED",
       },
     });
 
@@ -192,6 +200,14 @@ const getProductBySlugService = async (slug: string): Promise<ServiceResponse> =
             slug: true,
           },
         },
+        vendor: {
+          select: {
+            id: true,
+            businessName: true,
+            slug: true,
+            logo: true,
+          },
+        },
       },
     });
     if (!product) {
@@ -233,6 +249,12 @@ const getAllProductsService = async (options: any = {}): Promise<ServiceResponse
     const where: any = {};
     if (!includeDeleted) {
       where.isDeleted = false;
+    }
+
+    // Storefront should only see approved products
+    if (!options.isAdminRequest) {
+      where.productStatus = "APPROVED";
+      where.isActive = true;
     }
 
     if (isFeatured !== undefined) {
@@ -476,13 +498,8 @@ const deleteProductService = async (productId: string): Promise<ServiceResponse>
       data: { isDeleted: true, isActive: false },
     });
 
-    if (categoryId) {
-      const remainingProducts = await prisma.product.count({ where: { categoryId, isDeleted: false } });
-      if (remainingProducts === 0) {
-        await prisma.category.delete({ where: { id: categoryId } });
-        console.log(`Auto-cleaned empty category: ${categoryId}`);
-      }
-    }
+    // Auto-cleanup categories
+    await cleanupEmptyCategoriesService().catch((e) => console.error("Auto-cleanup failed:", e));
 
     return { success: true, statusCode: 200, message: "Product deleted and category cleaned up if empty", data: null };
   } catch (error: any) {
@@ -550,6 +567,90 @@ const bulkDeleteProductService = async (productIds: string[]): Promise<ServiceRe
   }
 };
 
+const getPendingProductsService = async (options: any = {}): Promise<ServiceResponse> => {
+  try {
+    const { page = 1, limit = 10 } = options;
+    const skip = (page - 1) * limit;
+
+    const [products, total] = await Promise.all([
+      prisma.product.findMany({
+        where: { productStatus: "PENDING_REVIEW", isDeleted: false },
+        include: { 
+          category: { select: { name: true } },
+          vendor: { include: { user: { select: { fullName: true, email: true } } } },
+          variants: { include: { stock: true } }
+        },
+        skip,
+        take: limit,
+        orderBy: { createdAt: "desc" }
+      }),
+      prisma.product.count({ where: { productStatus: "PENDING_REVIEW", isDeleted: false } })
+    ]);
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Pending products fetched successfully",
+      data: { products, total, pages: Math.ceil(total / limit) }
+    };
+  } catch (error: any) {
+    return { success: false, statusCode: 500, message: error.message, data: null };
+  }
+};
+
+const updateProductApprovalStatusService = async (productId: string, status: "APPROVED" | "REJECTED", reason?: string): Promise<ServiceResponse> => {
+  try {
+    const product = await prisma.product.findUnique({
+      where: { id: productId },
+      include: { vendor: { include: { user: true } } }
+    });
+
+    if (!product) return { success: false, statusCode: 404, message: "Product not found", data: null };
+
+    const updated = await prisma.product.update({
+      where: { id: productId },
+      data: { 
+        productStatus: status,
+        rejectionReason: reason || null,
+        isActive: status === "APPROVED" // Automatically activate on approval
+      }
+    });
+
+    // Send Notification Email
+    if (product.vendor?.user?.email) {
+      const isApproved = status === "APPROVED";
+      await mailTransporter.sendMail({
+        from: process.env.MAIL_FROM || `"LuxaCart Support" <${process.env.MAIL_USER}>`,
+        to: product.vendor.user.email,
+        subject: `Product ${isApproved ? 'Approved' : 'Rejected'}: ${product.name}`,
+        html: `
+          <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #eee; padding: 20px; border-radius: 10px;">
+            <h2 style="color: ${isApproved ? '#10b981' : '#ef4444'}; text-align: center;">
+              Product ${isApproved ? 'Approved' : 'Rejected'}
+            </h2>
+            <p>Hello <strong>${product.vendor.businessName}</strong>,</p>
+            <p>Your product <strong>${product.name}</strong> has been ${isApproved ? 'approved and is now live on the storefront' : 'rejected'}.</p>
+            ${!isApproved && reason ? `<div style="background: #fef2f2; border: 1px solid #fee2e2; padding: 15px; border-radius: 8px; color: #b91c1c;"><strong>Reason for rejection:</strong><br/>${reason}</div>` : ''}
+            <p style="margin-top: 20px; font-size: 12px; color: #666; text-align: center;">
+              Thank you for being a part of LuxaCart.<br/>
+              © ${new Date().getFullYear()} LuxaCart
+            </p>
+          </div>
+        `
+      }).catch((err: any) => console.error("Approval Email Error:", err.message));
+    }
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: `Product ${status.toLowerCase()} successfully`,
+      data: updated
+    };
+  } catch (error: any) {
+    return { success: false, statusCode: 500, message: error.message, data: null };
+  }
+};
+
 export {
   buildProductDetail,
   createProductService,
@@ -559,4 +660,6 @@ export {
   deleteProductService,
   bulkUpdateProductStatusService,
   bulkDeleteProductService,
+  getPendingProductsService,
+  updateProductApprovalStatusService,
 };

@@ -7,8 +7,8 @@ dotenv.config();
 
 const seedAdmin = async (): Promise<void> => {
   try {
-    const email = "admin@example.com";
-    const password = "Admin@123";
+    const email = "admin@luxacart.com";
+    const password = "admin123";
 
     const existingAdmin = await prisma.user.findFirst({
       where: { email, role: ROLE.ADMIN },

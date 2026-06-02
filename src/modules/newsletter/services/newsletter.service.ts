@@ -273,3 +273,79 @@ export const notifySubscribersService = async (product: any): Promise<void> => {
     console.error("notifySubscribersService error:", error.message);
   }
 };
+
+export const broadcastNewsletterService = async (subject: string, body: string): Promise<ServiceResponse> => {
+  try {
+    const subscribers = await prisma.subscriber.findMany({ where: { isActive: true } });
+    if (subscribers.length === 0) {
+      return { success: false, statusCode: 400, message: "No active subscribers found", data: null };
+    }
+
+    const fromAddress = process.env.MAIL_FROM || process.env.MAIL_USER;
+    const batchSize = 10;
+    let sentCount = 0;
+
+    for (let i = 0; i < subscribers.length; i += batchSize) {
+      const batch = subscribers.slice(i, i + batchSize);
+      const emailPromises = batch.map(sub => 
+        mailTransporter.sendMail({
+          from: fromAddress,
+          to: sub.email,
+          subject: subject,
+          html: `
+            <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 12px;">
+              <div style="text-align: center; margin-bottom: 20px;">
+                <h1 style="color: #002147;">LuxaCart</h1>
+              </div>
+              <div style="line-height: 1.6; color: #333;">
+                ${body.replace(/\n/g, '<br/>')}
+              </div>
+              <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; font-size: 12px; color: #999; text-align: center;">
+                You are receiving this because you subscribed to LuxaCart updates.<br/>
+                <a href="${process.env.CLIENT_URL}/unsubscribe?email=${sub.email}" style="color: #002147;">Unsubscribe</a>
+              </div>
+            </div>
+          `
+        }).then(() => { sentCount++; })
+          .catch(err => console.error(`Broadcast failed for ${sub.email}:`, err.message))
+      );
+      await Promise.allSettled(emailPromises);
+    }
+
+    // Log the broadcast
+    const log = await prisma.newsletterLog.create({
+      data: {
+        subject,
+        body,
+        recipientCount: sentCount
+      }
+    });
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: `Newsletter broadcasted to ${sentCount} subscribers`,
+      data: log
+    };
+  } catch (error: any) {
+    return { success: false, statusCode: 500, message: error.message, data: null };
+  }
+};
+
+export const getNewsletterLogsService = async (): Promise<ServiceResponse> => {
+  try {
+    const logs = await prisma.newsletterLog.findMany({
+      orderBy: { sentAt: "desc" }
+    });
+    const subscriberCount = await prisma.subscriber.count({ where: { isActive: true } });
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "Newsletter logs fetched",
+      data: { logs, subscriberCount }
+    };
+  } catch (error: any) {
+    return { success: false, statusCode: 500, message: error.message, data: null };
+  }
+};

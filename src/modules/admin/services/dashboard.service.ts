@@ -219,6 +219,24 @@ export const getDashboardStatsService = async (startDate?: string, endDate?: str
     activities.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
     const recentActivity = activities.slice(0, 10).map(({ date, ...rest }) => rest);
 
+    // ── 5. Top Vendors Performance ─────────────────────────────────────────────
+    const vendorStats = await prisma.vendor.findMany({
+      include: {
+        earnings: {
+          select: { grossAmount: true }
+        }
+      },
+      take: 20 // Fetch some to sort
+    });
+
+    const topVendors = vendorStats.map(v => ({
+      id: v.id,
+      name: v.businessName,
+      grossRevenue: v.earnings.reduce((sum, e) => sum + e.grossAmount, 0)
+    }))
+    .sort((a, b) => b.grossRevenue - a.grossRevenue)
+    .slice(0, 5);
+
     return {
       statusCode: 200,
       success: true,
@@ -228,6 +246,7 @@ export const getDashboardStatsService = async (startDate?: string, endDate?: str
         monthlySales,
         orderStatusDistribution,
         recentActivity,
+        topVendors,
       },
     };
   } catch (error: any) {

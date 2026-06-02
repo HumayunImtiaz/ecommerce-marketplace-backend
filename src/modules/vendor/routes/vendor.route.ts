@@ -11,8 +11,11 @@ import {
   getPlatformAnalytics,
   getVendorDetail,
   getVendorOrders,
+  getVendorProducts,
   updateVendorProfile,
   getVendorOrderDetail,
+  getVendorAnalytics,
+  getPublicVendorProfile,
 } from "../controllers/vendor.controller";
 import {
   getVendorPayoutHistory,
@@ -28,15 +31,20 @@ import {
 
 const router = Router();
 
+// ── Public Routes (accessible to everyone) ──
+router.get("/public/:slug", getPublicVendorProfile);
+
 // ── User Routes (logged-in user applies to become vendor) ──
 router.post("/register", authenticateUser, registerVendor);
 
 // ── Vendor Routes (approved vendors only) ──
 router.get("/profile", authenticateVendor, getVendorProfile);
 router.get("/dashboard", authenticateVendor, getVendorDashboard);
+router.get("/products", authenticateVendor, getVendorProducts);
 router.get("/orders", authenticateVendor, getVendorOrders);
 router.get("/orders/:id", authenticateVendor, getVendorOrderDetail);
 router.patch("/profile", authenticateVendor, updateVendorProfile);
+router.get("/analytics", authenticateVendor, getVendorAnalytics);
 router.get("/payout/history", authenticateVendor, getVendorPayoutHistory);
 router.post("/payout/request", authenticateVendor, createPayoutRequest);
 

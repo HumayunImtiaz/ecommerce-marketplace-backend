@@ -1,7 +1,7 @@
 import Stripe from "stripe";
 import prisma from "../../../config/prisma";
 import { syncStripeRedemption } from "./coupon.service";
-import { getIO } from "../../../socket";
+import { getIO, notifyVendor } from "../../../socket";
 import { z } from "zod";
 import mailTransporter from "../../../config/mail";
 import { notifyAdmin } from "../../../utils/notification.utils";
@@ -131,6 +131,10 @@ export const deductOrderStock = async (orderId: string) => {
       });
 
       console.log(`✅ [Inventory] Complete deduction for order: ${order.orderNumber}`);
+      
+      // Auto-cleanup categories that became empty after this order
+      const { cleanupEmptyCategoriesService } = require("../../product/services/category.service");
+      await cleanupEmptyCategoriesService().catch((e: any) => console.error("Auto-cleanup failed:", e));
     });
   } catch (error: any) {
     console.error(`[Inventory] ❌ Error during deduction for ${orderId}:`, error.message);
@@ -592,7 +596,7 @@ const notifyVendorsOfNewOrder = async (orderId: string) => {
 
     if (!order) return;
 
-    const vendorMap = new Map<string, { email: string; businessName: string; items: any[] }>();
+    const vendorMap = new Map<string, { id: string; email: string; businessName: string; items: any[] }>();
 
     for (const item of order.items) {
       const vendor = item.product?.vendor;
@@ -600,6 +604,7 @@ const notifyVendorsOfNewOrder = async (orderId: string) => {
         const email = vendor.user.email;
         if (!vendorMap.has(email)) {
           vendorMap.set(email, {
+            id: vendor.id,
             email,
             businessName: vendor.businessName || vendor.user.fullName || "Vendor",
             items: []
@@ -655,6 +660,13 @@ const notifyVendorsOfNewOrder = async (orderId: string) => {
         `
       });
       console.log(`✉️  Vendor notification sent to ${email} for order ${order.orderNumber}`);
+
+      // Real-time Notification
+      notifyVendor(data.id, "new_order", {
+        orderNumber: order.orderNumber,
+        message: `You have received a new order: ${order.orderNumber}`,
+        type: "order"
+      });
     }
   } catch (error: any) {
     console.error(`[Notification] Vendor email failed:`, error.message);
@@ -670,7 +682,7 @@ const sendProductRecommendationsEmail = async (order: any) => {
       where: { id: { in: purchasedProductIds } },
       select: { categoryId: true },
     });
-    const categoryIds = [...new Set(purchasedProducts.map((p) => p.categoryId))];
+    const categoryIds = [...new Set(purchasedProducts.map((p) => p.categoryId).filter((id): id is string => id !== null))];
 
     // Find recommended products: same category, active, not the ones just bought
     const recommendations = await prisma.product.findMany({

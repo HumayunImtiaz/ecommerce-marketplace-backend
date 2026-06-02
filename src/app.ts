@@ -13,6 +13,7 @@ const allowedOrigins = [
   process.env.ADMIN_CLIENT_URL,
   "http://localhost:3000",
   "http://localhost:3001",
+  "http://localhost:3002",
 ].filter(Boolean).map(url => url?.replace(/\/$/, "")) as string[];
 
 app.use(
@@ -25,7 +26,7 @@ app.use(
       if (allowedOrigins.includes(normalizedOrigin) || allowedOrigins.some(ao => normalizedOrigin.startsWith(ao))) {
         callback(null, true);
       } else {
-        console.warn(`⚠️ CORS blocked: ${origin}. Allowed:`, allowedOrigins);
+        console.warn(` CORS blocked: ${origin}. Allowed:`, allowedOrigins);
         callback(new Error(`CORS blocked: ${origin} is not allowed`));
       }
     },
@@ -34,7 +35,7 @@ app.use(
 );
 
 app.use("/api/webhook/stripe", (req, res, next) => {
-  console.log(`➡️ [${new Date().toISOString()}] Webhook Attempt: ${req.method} ${req.url}`);
+  console.log(` [${new Date().toISOString()}] Webhook Attempt: ${req.method} ${req.url}`);
   next();
 }, express.raw({ type: "*/*" }), webhookRoutes);
 

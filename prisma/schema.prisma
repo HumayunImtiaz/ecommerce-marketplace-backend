@@ -32,6 +32,12 @@ enum PayoutStatus {
   REJECTED
 }
 
+enum ProductStatus {
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+}
+
 model User {
   id                         String        @id @default(uuid())
   fullName                   String
@@ -122,13 +128,15 @@ model Product {
   price         Float
   comparePrice  Float?
   sku           String         @unique
-  categoryId    String
+  categoryId    String?
   vendorId      String?
   tags          String[]
   images        String[]
   features      String[]
   isActive      Boolean        @default(true)
   isFeatured    Boolean        @default(false)
+  productStatus ProductStatus @default(APPROVED)
+  rejectionReason String?
   avgRating     Float          @default(0)
   reviewCount   Int            @default(0)
   isDeleted     Boolean        @default(false)
@@ -136,7 +144,7 @@ model Product {
   updatedAt     DateTime       @updatedAt
   cartItems     CartItem[]
   orderItems    OrderItem[]
-  category      Category       @relation(fields: [categoryId], references: [id])
+  category      Category?       @relation(fields: [categoryId], references: [id])
   vendor        Vendor?        @relation(fields: [vendorId], references: [id], onDelete: Restrict)
   reviews       Review[]
   variants      Variant[]
@@ -376,4 +384,12 @@ model SiteSettings {
   settings   Json
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
+}
+
+model NewsletterLog {
+  id             String   @id @default(uuid())
+  subject        String
+  body           String
+  recipientCount Int
+  sentAt         DateTime @default(now())
 }

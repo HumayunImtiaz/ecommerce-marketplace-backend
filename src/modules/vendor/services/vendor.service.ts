@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import prisma from "../../../config/prisma";
 import mailTransporter from "../../../config/mail";
 import { createError } from "../../../utils/apiResponse";
@@ -156,11 +157,17 @@ export const getAllVendorsService = async (status?: string) => {
     orderBy: { createdAt: "desc" },
   });
 
+  // Serialize Prisma Decimal fields to plain numbers
+  const serialized = vendors.map((v) => ({
+    ...v,
+    commissionRate: Number(v.commissionRate),
+  }));
+
   return {
     statusCode: 200,
     success: true,
     message: "Vendors fetched successfully",
-    data: vendors,
+    data: serialized,
   };
 };
 
@@ -206,7 +213,7 @@ export const approveVendorService = async (vendorId: string) => {
           <p>Your vendor application for <strong>${vendor.businessName}</strong> has been <span style="color: green; font-weight: bold;">APPROVED</span>.</p>
           <p>You can now log in to your vendor dashboard and start adding products.</p>
           <p style="margin-top: 20px;">
-            <a href="${process.env.CLIENT_URL}/vendor/dashboard" style="background: #002147; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px;">Go to Vendor Dashboard</a>
+            <a href="${process.env.VENDOR_CLIENT_URL || 'http://localhost:3002'}/login" style="background: #002147; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px;">Go to Vendor Dashboard</a>
           </p>
         </div>
       `,
@@ -316,11 +323,27 @@ export const getVendorDetailService = async (vendorId: string) => {
     throw createError({ statusCode: 404, message: "Vendor not found" });
   }
 
+  // Convert Prisma Decimal to plain number for proper JSON serialization
+  const serializedVendor = {
+    ...vendor,
+    commissionRate: Number(vendor.commissionRate),
+    products: vendor.products.map((p: any) => ({
+      ...p,
+      price: Number(p.price),
+    })),
+    earnings: vendor.earnings.map((e: any) => ({
+      ...e,
+      grossAmount: Number(e.grossAmount),
+      commissionAmount: Number(e.commissionAmount),
+      netAmount: Number(e.netAmount),
+    })),
+  };
+
   return {
     statusCode: 200,
     success: true,
     message: "Vendor detail fetched successfully",
-    data: vendor,
+    data: serializedVendor,
   };
 };
 
@@ -331,14 +354,17 @@ export const updateVendorCommissionService = async (vendorId: string, commission
 
   const updatedVendor = await prisma.vendor.update({
     where: { id: vendorId },
-    data: { commissionRate: commissionRate }
+    data: { commissionRate: new Prisma.Decimal(commissionRate) }
   });
 
   return {
     statusCode: 200,
     success: true,
     message: "Commission rate updated successfully",
-    data: updatedVendor,
+    data: {
+      ...updatedVendor,
+      commissionRate: Number(updatedVendor.commissionRate),
+    },
   };
 };
 
@@ -423,6 +449,42 @@ export const getVendorOrdersService = async (userId: string) => {
   };
 };
 
+// ── Vendor: Get Products for Vendor ──
+export const getVendorProductsService = async (userId: string) => {
+  const vendor = await prisma.vendor.findUnique({ where: { userId } });
+  if (!vendor) throw createError({ statusCode: 404, message: "Vendor profile not found" });
+
+  const products = await prisma.product.findMany({
+    where: { 
+      vendorId: vendor.id,
+      isDeleted: false
+    },
+    include: {
+      category: { select: { name: true, slug: true } },
+      variants: { include: { stock: true } },
+    },
+    orderBy: { createdAt: "desc" }
+  });
+
+  // Calculate total stock correctly for UI display
+  const mappedProducts = products.map((p: any) => {
+    let totalStock = p.variants.reduce((sum: number, v: any) => sum + (v.stock?.quantity || 0), 0);
+    return {
+      ...p,
+      price: Number(p.price),
+      comparePrice: p.comparePrice ? Number(p.comparePrice) : null,
+      totalStock: Math.max(0, totalStock)
+    };
+  });
+
+  return {
+    statusCode: 200,
+    success: true,
+    message: "Vendor products fetched successfully",
+    data: mappedProducts,
+  };
+};
+
 // ── Vendor: Update Vendor Profile ──
 export const updateVendorProfileService = async (userId: string, updateData: any) => {
   const vendor = await prisma.vendor.findUnique({ where: { userId } });
@@ -485,3 +547,83 @@ export const getVendorOrderDetailService = async (userId: string, orderId: strin
     data: order,
   };
 };
+
+// ── Vendor: Get Analytics (Monthly Earnings) ──
+export const getVendorAnalyticsService = async (vendorId: string) => {
+  const sixMonthsAgo = new Date();
+  sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 5); // Include current month
+  sixMonthsAgo.setDate(1);
+  sixMonthsAgo.setHours(0, 0, 0, 0);
+
+  const earnings = await prisma.vendorEarning.findMany({
+    where: {
+      vendorId,
+      createdAt: { gte: sixMonthsAgo }
+    },
+    select: {
+      netAmount: true,
+      createdAt: true
+    }
+  });
+
+  // Initialize last 6 months
+  const monthlyData: Record<string, number> = {};
+  const months = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date();
+    d.setMonth(d.getMonth() - i);
+    const monthName = d.toLocaleString('default', { month: 'short' });
+    months.push(monthName);
+    monthlyData[monthName] = 0;
+  }
+
+  earnings.forEach(e => {
+    const monthName = new Date(e.createdAt).toLocaleString('default', { month: 'short' });
+    if (monthlyData[monthName] !== undefined) {
+      monthlyData[monthName] += Number(e.netAmount);
+    }
+  });
+
+  const chartData = months.map(name => ({
+    name,
+    earnings: Number(monthlyData[name].toFixed(2))
+  }));
+
+  return {
+    statusCode: 200,
+    success: true,
+    message: "Vendor analytics fetched",
+    data: { chartData }
+  };
+};
+
+// ── Public: Get Vendor Profile by Slug (for Users) ──
+export const getPublicVendorProfileService = async (slug: string) => {
+  const vendor = await prisma.vendor.findUnique({
+    where: { slug, status: "APPROVED" },
+    include: {
+      user: {
+        select: { fullName: true, avatar: true, createdAt: true },
+      },
+      products: {
+        where: { isDeleted: false, isActive: true, productStatus: "APPROVED" },
+        orderBy: { createdAt: "desc" },
+      },
+      _count: {
+        select: { products: { where: { isDeleted: false, isActive: true, productStatus: "APPROVED" } } },
+      },
+    },
+  });
+
+  if (!vendor) {
+    throw createError({ statusCode: 404, message: "Vendor not found" });
+  }
+
+  return {
+    statusCode: 200,
+    success: true,
+    message: "Public vendor profile fetched successfully",
+    data: vendor,
+  };
+};
+
