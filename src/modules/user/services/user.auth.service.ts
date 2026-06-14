@@ -33,10 +33,12 @@ const resetPasswordExpiryMinutes = Number(
 
 const sendVerificationEmail = async (
   email: string,
-  token: string
+  token: string,
+  portal?: string
 ): Promise<ServiceResponse<null>> => {
   try {
-    const verificationLink = `${process.env.CLIENT_URL}/auth/verify-email?token=${token}`;
+    const baseUrl = portal === "vendor" ? process.env.VENDOR_URL || "http://localhost:3002" : process.env.CLIENT_URL || "http://localhost:3000";
+    const verificationLink = portal === "vendor" ? `${baseUrl}/verify-email?token=${token}` : `${baseUrl}/auth/verify-email?token=${token}`;
 
     await mailTransporter.sendMail({
       from: process.env.MAIL_FROM,
@@ -97,6 +99,7 @@ const registerUserService = async (
 
     const { fullName, email, password } = validation.data;
     const avatar = body.avatar || null;
+    const portal = body.portal || "user";
 
     const existingUser = await prisma.user.findFirst({ where: { email } });
 
@@ -134,7 +137,7 @@ const registerUserService = async (
         password: hashedPassword,
         avatar: avatar || null,
         role: ROLE.USER,
-        provider: "local",
+        provider: portal === "vendor" ? "local-vendor" : "local",
         providerId: null,
         emailVerificationToken: verificationToken,
         emailVerificationExpires: verificationExpires,
@@ -151,7 +154,7 @@ const registerUserService = async (
       category: "customerNotifications",
     });
 
-    const emailResponse = await sendVerificationEmail(user.email, verificationToken);
+    const emailResponse = await sendVerificationEmail(user.email, verificationToken, portal);
 
     if (!emailResponse.success) {
       return {
@@ -192,14 +195,7 @@ const getMeService = async (userId: string): Promise<ServiceResponse> => {
   try {
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: {
-        id: true,
-        fullName: true,
-        email: true,
-        role: true,
-        avatar: true,
-        isVerified: true,
-      },
+      include: { vendor: { select: { status: true } } }
     });
 
     if (!user) {
@@ -215,7 +211,17 @@ const getMeService = async (userId: string): Promise<ServiceResponse> => {
       success: true,
       statusCode: 200,
       message: "User fetched successfully",
-      data: { user },
+      data: { 
+        user: {
+          id: user.id,
+          fullName: user.fullName,
+          email: user.email,
+          role: user.role,
+          avatar: user.avatar,
+          isVerified: user.isVerified,
+          vendorStatus: user.vendor ? user.vendor.status : null,
+        }
+      },
     };
   } catch (error: any) {
     return {
@@ -419,7 +425,10 @@ const loginUserService = async (
 
     const { email, password } = validation.data;
 
-    const user = await prisma.user.findFirst({ where: { email } });
+    const user = await prisma.user.findFirst({ 
+      where: { email },
+      include: { vendor: true }
+    });
 
     if (!user) {
       return {
@@ -429,6 +438,19 @@ const loginUserService = async (
         data: null,
         errors: [{ field: "email", message: "No account found with this email" }],
       };
+    }
+
+    const requestPortal = body.portal || "user";
+    const isVendorPortal = requestPortal === "vendor";
+    
+    if (user.provider.startsWith("local")) {
+      const isUserVendorProvider = user.provider === "local-vendor";
+      if (isVendorPortal && !isUserVendorProvider) {
+        return { success: false, statusCode: 403, message: "Account mapping error: Please use the standard User portal to login. This portal is strictly for Vendors.", data: null };
+      }
+      if (!isVendorPortal && isUserVendorProvider) {
+        return { success: false, statusCode: 403, message: "Account mapping error: Please use the Vendor portal to login. This portal is strictly for Shop Users.", data: null };
+      }
     }
 
     if (!user.password) {
@@ -481,6 +503,7 @@ const loginUserService = async (
           role: user.role, // Include role in response
           isVerified: user.isVerified,
           provider: user.provider,
+          vendorStatus: user.vendor ? user.vendor.status : null,
         },
         token,
       },

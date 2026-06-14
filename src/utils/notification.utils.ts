@@ -7,8 +7,8 @@ interface AdminNotificationPayload {
   message: string;
   type: "info" | "success" | "warning" | "error";
   relatedId?: string;
-  relatedModel?: "Order" | "Contact" | "Product" | "User";
-  category: "orderNotifications" | "customerNotifications" | "inventoryNotifications" | "marketingNotifications";
+  relatedModel?: "Order" | "Contact" | "Product" | "User" | "Vendor";
+  category: "orderNotifications" | "customerNotifications" | "inventoryNotifications" | "marketingNotifications" | "vendorNotifications";
 }
 
 export const notifyAdmin = async (payload: AdminNotificationPayload) => {

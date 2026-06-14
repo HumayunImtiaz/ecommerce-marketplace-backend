@@ -35,6 +35,7 @@ const registerVendor = async (req: Request, res: Response, next: NextFunction) =
   }
 };
 
+
 // ── Vendor: Get own profile ──
 const getVendorProfile = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -175,7 +176,7 @@ const getVendorDetail = async (req: Request, res: Response, next: NextFunction) 
 
 const getVendorOrders = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const userId = (req as any).user.id;
+    const userId = (req as any).authVendor?.id;
     const result = await getVendorOrdersService(userId);
     return res.status(result.statusCode).json({
       success: result.success,
@@ -206,7 +207,7 @@ const getVendorProducts = async (req: Request, res: Response, next: NextFunction
 
 const updateVendorProfile = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const userId = (req as any).user.id;
+    const userId = (req as any).authVendor?.id;
     const result = await updateVendorProfileService(userId, req.body);
     return res.status(result.statusCode).json({
       success: result.success,
@@ -220,7 +221,7 @@ const updateVendorProfile = async (req: Request, res: Response, next: NextFuncti
 
 const getVendorOrderDetail = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const userId = (req as any).user.id;
+    const userId = (req as any).authVendor?.id;
     const orderId = String(req.params.id);
     const result = await getVendorOrderDetailService(userId, orderId);
     return res.status(result.statusCode).json({
