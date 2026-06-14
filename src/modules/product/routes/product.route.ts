@@ -7,42 +7,47 @@ import {
   deleteProduct,
   bulkUpdateProductStatus,
   bulkDeleteProducts,
+  getPendingProducts,
+  updateProductApprovalStatus,
 } from "../controllers/product.controller";
-import { authenticateAdmin } from "../../../middlewares/auth.middleware";
+import { authenticateStaff } from "../../../middlewares/auth.middleware";
 
 const router = Router();
 
 router.post(
   "/",
-  authenticateAdmin,
+  authenticateStaff,
   createProduct
 );
 
 router.get("/", getAllProducts);
 router.get("/slug/:slug", getProductBySlug);
+router.get("/approval/pending", authenticateStaff, getPendingProducts);
 
 router.patch(
   "/bulk-status",
-  authenticateAdmin,
+  authenticateStaff,
   bulkUpdateProductStatus
 );
 
 router.delete(
   "/bulk-delete",
-  authenticateAdmin,
+  authenticateStaff,
   bulkDeleteProducts
 );
 
 router.put(
   "/:productId",
-  authenticateAdmin,
+  authenticateStaff,
   updateProduct
 );
 
 router.delete(
   "/:productId",
-  authenticateAdmin,
+  authenticateStaff,
   deleteProduct
 );
+
+router.patch("/approval/:productId/status", authenticateStaff, updateProductApprovalStatus);
 
 export default router;

@@ -8,6 +8,7 @@ type RequestWithUser = Request & {
   loginUser?: any;
   authUser?: any;
   authAdmin?: any;
+  authVendor?: any;
 };
 
 const getUserByEmailFromRequest = async (
@@ -149,7 +150,7 @@ const authenticateByRole = (role: AuthRole) => {
       const token = authHeader.split(" ")[1];
       const decoded = verifyToken(token);
 
-      if (decoded.role?.toLowerCase() !== role.toLowerCase()) {
+      if (role !== ROLE.USER && decoded.role?.toLowerCase() !== role.toLowerCase()) {
         return next(
           createError({
             statusCode: 401,
@@ -163,7 +164,7 @@ const authenticateByRole = (role: AuthRole) => {
       if (role === ROLE.USER) {
         const userId = (decoded.id || (decoded as any)._id) as string;
         const user = await prisma.user.findFirst({
-          where: { id: userId, role: ROLE.USER }
+          where: { id: userId }
         });
 
         if (!user) {
@@ -178,6 +179,39 @@ const authenticateByRole = (role: AuthRole) => {
         }
 
         (req as RequestWithUser).authUser = user;
+        return next();
+      }
+
+      if (role === ROLE.VENDOR) {
+        const vendorUserId = (decoded.id || (decoded as any)._id) as string;
+        const user = await prisma.user.findFirst({
+          where: { id: vendorUserId, role: ROLE.VENDOR },
+          include: { vendor: true },
+        });
+
+        if (!user || !user.vendor) {
+          return next(
+            createError({
+              statusCode: 404,
+              success: false,
+              message: "Vendor not found",
+              data: null,
+            })
+          );
+        }
+
+        if (user.vendor.status !== "APPROVED") {
+          return next(
+            createError({
+              statusCode: 403,
+              success: false,
+              message: "Vendor account is not approved yet",
+              data: null,
+            })
+          );
+        }
+
+        (req as RequestWithUser).authVendor = { ...user, vendor: user.vendor };
         return next();
       }
 
@@ -213,8 +247,44 @@ const authenticateByRole = (role: AuthRole) => {
   };
 };
 
+const authenticateStaff = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return next(createError({ statusCode: 401, success: false, message: "Unauthorized", data: null }));
+    }
+
+    const token = authHeader.split(" ")[1];
+    const decoded = verifyToken(token);
+    const role = decoded.role?.toUpperCase();
+
+    if (role === ROLE.ADMIN || role === ROLE.VENDOR) {
+      if (role === ROLE.ADMIN) {
+        const admin = await prisma.user.findFirst({ where: { id: (decoded.id || (decoded as any)._id) as string, role: ROLE.ADMIN } });
+        if (!admin) return next(createError({ statusCode: 404, message: "Admin not found", data: null, success: false }));
+        (req as RequestWithUser).authAdmin = admin;
+      } else {
+        const vendorUserId = (decoded.id || (decoded as any)._id) as string;
+        const user = await prisma.user.findFirst({
+          where: { id: vendorUserId, role: ROLE.VENDOR },
+          include: { vendor: true },
+        });
+        if (!user || !user.vendor) return next(createError({ statusCode: 404, message: "Vendor not found", data: null, success: false }));
+        if (user.vendor.status !== "APPROVED") return next(createError({ statusCode: 403, message: "Vendor not approved", data: null, success: false }));
+        (req as RequestWithUser).authVendor = { ...user, vendor: user.vendor };
+      }
+      return next();
+    }
+
+    return next(createError({ statusCode: 401, message: "Unauthorized - Staff access only", data: null, success: false }));
+  } catch (error) {
+    return next(createError({ statusCode: 401, message: "Invalid or expired token", data: null, success: false }));
+  }
+};
+
 const authenticateUser = authenticateByRole(ROLE.USER);
 const authenticateAdmin = authenticateByRole(ROLE.ADMIN);
+const authenticateVendor = authenticateByRole(ROLE.VENDOR);
 
 export {
   getUserByEmailFromRequest,
@@ -222,4 +292,6 @@ export {
   checkUserVerifiedBeforeLogin,
   authenticateUser,
   authenticateAdmin,
+  authenticateVendor,
+  authenticateStaff,
 };

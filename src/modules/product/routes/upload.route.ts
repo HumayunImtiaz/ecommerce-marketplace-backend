@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from "express";
-import { authenticateAdmin } from "../../../middlewares/auth.middleware";
+import { authenticateStaff } from "../../../middlewares/auth.middleware";
 import { storageData } from "../../../utils/multer";
 
 const router = Router();
@@ -7,7 +7,7 @@ const upload = storageData("uploads/products");
 
 router.post(
   "/images",
-  authenticateAdmin,
+  authenticateStaff,
   (req: Request, res: Response, next: NextFunction) => {
     upload.array("images", 10)(req, res, (err: any) => {
       if (err) {

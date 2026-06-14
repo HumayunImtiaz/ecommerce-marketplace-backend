@@ -21,6 +21,7 @@ const generateSlug = (name: string): string => {
 
 const createCategoryService = async (body: any): Promise<ServiceResponse> => {
   try {
+    console.log("[Category] Received create request with body:", JSON.stringify(body, null, 2));
     const validation = categoryValidation.createCategorySchema.safeParse(body);
 
     if (!validation.success) {
@@ -39,26 +40,41 @@ const createCategoryService = async (body: any): Promise<ServiceResponse> => {
     }
 
     const validData = validation.data;
+    const name = validData.name.trim();
     const slug = validData.slug
       ? validData.slug.toLowerCase().trim()
-      : generateSlug(validData.name);
+      : generateSlug(name);
+
+    console.log(`[Category] Checking uniqueness for Name: "${name}", Slug: "${slug}"`);
 
     const existing = await prisma.category.findFirst({
       where: {
-        OR: [{ name: validData.name }, { slug }],
+        OR: [
+          { name: { equals: name, mode: 'insensitive' } },
+          { slug: { equals: slug, mode: 'insensitive' } }
+        ],
       },
+      include: {
+        _count: {
+          select: { products: { where: { isDeleted: false } } }
+        }
+      }
     });
 
     if (existing) {
-      const duplicateField = existing.name === validData.name ? "name" : "slug";
-
-      return {
-        success: false,
-        statusCode: 409,
-        message: `Category with this ${duplicateField} already exists`,
-        data: null,
-        errors: [{ field: duplicateField, message: `"${duplicateField === "name" ? validData.name : slug}" already exists` }],
-      };
+      if (existing._count.products === 0) {
+        console.log(`[Category] Found existing empty category "${existing.name}". Cleaning up to allow re-creation.`);
+        await prisma.category.delete({ where: { id: existing.id } });
+      } else {
+        const field = existing.name.toLowerCase() === name.toLowerCase() ? "name" : "slug";
+        return {
+          success: false,
+          statusCode: 409,
+          message: `Category already exists with this ${field}: "${field === "name" ? existing.name : existing.slug}" and it has active products.`,
+          data: null,
+          errors: [{ field, message: `Category already exists and is not empty` }],
+        };
+      }
     }
 
     const category = await prisma.category.create({
@@ -89,38 +105,37 @@ const createCategoryService = async (body: any): Promise<ServiceResponse> => {
 
 const getAllCategoriesService = async (hideEmpty: boolean = false): Promise<ServiceResponse> => {
   try {
-    // 1. Get all categories
-    const allCategories = await prisma.category.findMany({
+    const where: any = {};
+    
+    // If hideEmpty is true, only return categories with at least one active product
+    if (hideEmpty) {
+      where.products = {
+        some: {
+          isDeleted: false,
+          isActive: true
+        }
+      };
+    }
+
+    const categories = await prisma.category.findMany({
+      where,
+      include: {
+        _count: {
+          select: {
+            products: {
+              where: { isDeleted: false },
+            },
+          },
+        },
+      },
       orderBy: { createdAt: "desc" },
     });
-
-    // 2. Filter out and DELETE categories that have NO active products
-    const categoriesWithProducts = [];
-    for (const category of allCategories) {
-      const productCount = await prisma.product.count({
-        where: { categoryId: category.id, isDeleted: false }
-      });
-
-      if (productCount === 0) {
-        // Automatically delete if empty
-        await prisma.category.delete({ where: { id: category.id } });
-        console.log(`Auto-deleted empty category: ${category.name}`);
-      } else {
-        categoriesWithProducts.push(category);
-      }
-    }
-
-    // 3. Apply hideEmpty filter if requested
-    let finalCategories = categoriesWithProducts;
-    if (hideEmpty) {
-      finalCategories = categoriesWithProducts.filter(cat => cat.isActive);
-    }
 
     return {
       success: true,
       statusCode: 200,
-      message: "Categories fetched successfully and empty ones cleaned up",
-      data: finalCategories,
+      message: "Categories fetched successfully",
+      data: categories,
     };
   } catch (error: any) {
     console.error("getAllCategoriesService error:", error);
@@ -274,9 +289,45 @@ const deleteCategoryService = async (
   }
 };
 
+const cleanupEmptyCategoriesService = async (): Promise<ServiceResponse> => {
+  try {
+    const orphanCategories = await prisma.category.findMany({
+      where: {
+        products: {
+          none: { isDeleted: false }
+        }
+      }
+    });
+
+    if (orphanCategories.length > 0) {
+      const ids = orphanCategories.map(c => c.id);
+      await prisma.category.deleteMany({
+        where: { id: { in: ids } }
+      });
+      console.log(`[Cleanup] Deleted ${orphanCategories.length} orphan categories.`);
+    }
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: `Cleaned up ${orphanCategories.length} empty categories`,
+      data: { count: orphanCategories.length },
+    };
+  } catch (error: any) {
+    console.error("cleanupEmptyCategoriesService error:", error);
+    return {
+      success: false,
+      statusCode: 500,
+      message: `Cleanup failed: ${error.message}`,
+      data: null,
+    };
+  }
+};
+
 export {
   createCategoryService,
   getAllCategoriesService,
   updateCategoryService,
   deleteCategoryService,
+  cleanupEmptyCategoriesService,
 };

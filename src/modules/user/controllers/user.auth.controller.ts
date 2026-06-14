@@ -11,7 +11,25 @@ import {
   getEmailPreferencesService,
   updateEmailPreferencesService,
   updateUserProfileService,
+  getMeService,
 } from "../services/user.auth.service";
+
+const getMe = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const userId = (req as any).authUser?.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Unauthorized", data: null });
+    }
+    const result = await getMeService(userId.toString());
+    return res.status(result.statusCode).json({
+      success: result.success,
+      message: result.message,
+      data: result.data,
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
 
 const registerUser = async (
   req: Request,
@@ -237,4 +255,5 @@ export {
   getEmailPreferences,
   updateEmailPreferences,
   updateUserProfile,
+  getMe,
 };

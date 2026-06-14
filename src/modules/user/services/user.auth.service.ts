@@ -133,7 +133,7 @@ const registerUserService = async (
         email,
         password: hashedPassword,
         avatar: avatar || null,
-        role: "user",
+        role: ROLE.USER,
         provider: "local",
         providerId: null,
         emailVerificationToken: verificationToken,
@@ -183,6 +183,45 @@ const registerUserService = async (
       success: false,
       statusCode: 500,
       message: `Failed to create account: ${error.message || "unknown error"}`,
+      data: null,
+    };
+  }
+};
+
+const getMeService = async (userId: string): Promise<ServiceResponse> => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        role: true,
+        avatar: true,
+        isVerified: true,
+      },
+    });
+
+    if (!user) {
+      return {
+        success: false,
+        statusCode: 404,
+        message: "User not found",
+        data: null,
+      };
+    }
+
+    return {
+      success: true,
+      statusCode: 200,
+      message: "User fetched successfully",
+      data: { user },
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      statusCode: 500,
+      message: error.message || "Internal server error",
       data: null,
     };
   }
@@ -426,7 +465,7 @@ const loginUserService = async (
     const token = generateToken({
       id: user.id,
       email: user.email,
-      role: ROLE.USER,
+      role: user.role, // Use the actual role from the database
     });
 
     return {
@@ -439,6 +478,7 @@ const loginUserService = async (
           fullName: user.fullName,
           email: user.email,
           avatar: user.avatar,
+          role: user.role, // Include role in response
           isVerified: user.isVerified,
           provider: user.provider,
         },
@@ -515,7 +555,7 @@ const socialLoginService = async (
           fullName: socialUser.fullName,
           email: socialUser.email,
           avatar: null,
-          role: "user",
+          role: ROLE.USER,
           provider,
           providerId: socialUser.providerId,
           isVerified: true,
@@ -538,7 +578,7 @@ const socialLoginService = async (
     const authToken = generateToken({
       id: user.id,
       email: user.email,
-      role: ROLE.USER,
+      role: user.role, // Use the actual role from the database
     });
 
     return {
@@ -551,6 +591,7 @@ const socialLoginService = async (
           fullName: user.fullName,
           email: user.email,
           avatar: user.avatar,
+          role: user.role, // Include role in response
           isVerified: user.isVerified,
           provider: user.provider,
         },
@@ -932,4 +973,5 @@ export {
   getEmailPreferencesService,
   updateEmailPreferencesService,
   updateUserProfileService,
+  getMeService,
 };

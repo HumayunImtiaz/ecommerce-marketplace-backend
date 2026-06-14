@@ -28,6 +28,12 @@ export function setupSocketIO(httpServer: HTTPServer) {
       console.log(`Socket ${socket.id} joined room ${chatId}`);
     });
 
+    // Join vendor-specific notification room
+    socket.on("join_vendor", (vendorId: string) => {
+      socket.join(`vendor_${vendorId}`);
+      console.log(`Socket ${socket.id} joined vendor room: vendor_${vendorId}`);
+    });
+
     // Handle sending a message
     socket.on(
       "send_message",
@@ -86,4 +92,16 @@ export function setupSocketIO(httpServer: HTTPServer) {
 
 export function getIO() {
   return ioInstance;
+}
+
+/**
+ * Utility to notify a vendor in real-time
+ */
+export function notifyVendor(vendorId: string, event: string, payload: any) {
+  if (ioInstance) {
+    ioInstance.to(`vendor_${vendorId}`).emit(event, payload);
+    console.log(`Real-time notification sent to vendor_${vendorId}: ${event}`);
+  } else {
+    console.warn("Socket.io instance not initialized, could not notify vendor.");
+  }
 }

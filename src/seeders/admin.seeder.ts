@@ -1,16 +1,17 @@
 import dotenv from "dotenv";
 import prisma from "../config/prisma";
 import bcrypt from "bcryptjs";
+import { ROLE } from "../utils/enums/role";
 
 dotenv.config();
 
 const seedAdmin = async (): Promise<void> => {
   try {
-    const email = "admin@example.com";
-    const password = "Admin@123";
+    const email = "admin@luxacart.com";
+    const password = "admin123";
 
     const existingAdmin = await prisma.user.findFirst({
-      where: { email, role: "admin" },
+      where: { email, role: ROLE.ADMIN },
     });
 
     if (existingAdmin) {
@@ -20,25 +21,15 @@ const seedAdmin = async (): Promise<void> => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const adminData = {
-      fullName: "Super Admin",
-      email,
-      password: hashedPassword,
-      role: "admin",
-      provider: "local",
-      isVerified: true,
-      avatar: null,
-      providerId: null,
-      deletedAt: null,
-      deletedBy: null,
-      resetPasswordToken: null,
-      resetPasswordExpires: null,
-      emailVerificationToken: null,
-      emailVerificationExpires: null,
-    };
-
     await prisma.user.create({
-      data: adminData,
+      data: {
+        fullName: "Super Admin",
+        email,
+        password: hashedPassword,
+        role: ROLE.ADMIN,
+        provider: "local",
+        isVerified: true,
+      },
     });
 
     console.log("Admin seeded successfully in Neon DB");

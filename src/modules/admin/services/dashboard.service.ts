@@ -1,4 +1,5 @@
 import prisma from "../../../config/prisma";
+import { ROLE } from "../../../utils/enums/role";
 
 function timeAgo(date: Date): string {
   const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
@@ -59,7 +60,7 @@ export const getDashboardStatsService = async (startDate?: string, endDate?: str
 
     const currentCustomersCount = await prisma.user.count({
       where: {
-        role: "user",
+        role: ROLE.USER,
         isDeleted: false,
         createdAt: { gte: start, lte: end },
       },
@@ -67,7 +68,7 @@ export const getDashboardStatsService = async (startDate?: string, endDate?: str
 
     const previousCustomersCount = await prisma.user.count({
       where: {
-        role: "user",
+        role: ROLE.USER,
         isDeleted: false,
         createdAt: { gte: prevStart, lte: prevEnd },
       },
@@ -174,7 +175,7 @@ export const getDashboardStatsService = async (startDate?: string, endDate?: str
 
     const recentSignups = await prisma.user.findMany({
       where: {
-        role: "user",
+        role: ROLE.USER,
         createdAt: { gte: start, lte: end },
       },
       orderBy: { createdAt: "desc" },
@@ -187,6 +188,7 @@ export const getDashboardStatsService = async (startDate?: string, endDate?: str
       activities.push({
         id: order.id,
         type: "order",
+        role: ROLE.USER,
         user: order.user?.fullName || "Unknown User",
         avatar: order.user?.avatar || null,
         action:
@@ -217,6 +219,24 @@ export const getDashboardStatsService = async (startDate?: string, endDate?: str
     activities.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
     const recentActivity = activities.slice(0, 10).map(({ date, ...rest }) => rest);
 
+    // ── 5. Top Vendors Performance ─────────────────────────────────────────────
+    const vendorStats = await prisma.vendor.findMany({
+      include: {
+        earnings: {
+          select: { grossAmount: true }
+        }
+      },
+      take: 20 // Fetch some to sort
+    });
+
+    const topVendors = vendorStats.map(v => ({
+      id: v.id,
+      name: v.businessName,
+      grossRevenue: v.earnings.reduce((sum, e) => sum + e.grossAmount, 0)
+    }))
+    .sort((a, b) => b.grossRevenue - a.grossRevenue)
+    .slice(0, 5);
+
     return {
       statusCode: 200,
       success: true,
@@ -226,6 +246,7 @@ export const getDashboardStatsService = async (startDate?: string, endDate?: str
         monthlySales,
         orderStatusDistribution,
         recentActivity,
+        topVendors,
       },
     };
   } catch (error: any) {
