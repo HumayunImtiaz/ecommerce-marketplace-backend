@@ -1,7 +1,11 @@
 import { Prisma } from "@prisma/client";
 import prisma from "../../../config/prisma";
+import bcrypt from "bcryptjs";
+import generateVerificationToken from "../../../utils/token";
+import { ROLE } from "../../../utils/enums/role";
 import mailTransporter from "../../../config/mail";
 import { createError } from "../../../utils/apiResponse";
+import { notifyAdmin } from "../../../utils/notification.utils";
 
 // ── Vendor Registration (User applies to become a vendor) ──
 export const registerVendorService = async (
@@ -36,8 +40,8 @@ export const registerVendorService = async (
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/(^-|-$)/g, "") +
-      "-" +
-      Date.now().toString(36);
+    "-" +
+    Date.now().toString(36);
 
   // Check slug uniqueness
   const slugExists = await prisma.vendor.findUnique({ where: { slug } });
@@ -94,13 +98,15 @@ export const registerVendorService = async (
   };
 };
 
+
+
 // ── Get Vendor Profile (for logged-in vendor) ──
 export const getVendorProfileService = async (userId: string) => {
   const vendor = await prisma.vendor.findUnique({
     where: { userId },
     include: {
       user: {
-        select: { fullName: true, email: true, avatar: true },
+        select: { fullName: true, email: true, avatar: true, phone: true },
       },
     },
   });
@@ -119,7 +125,20 @@ export const getVendorProfileService = async (userId: string) => {
 
 // ── Get Vendor Dashboard Stats ──
 export const getVendorDashboardService = async (vendorId: string) => {
-  const [totalProducts, totalEarnings, pendingPayouts] = await Promise.all([
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+
+  const [
+    totalProducts, 
+    totalEarningsAgg, 
+    pendingPayouts, 
+    totalOrders, 
+    vendor, 
+    recentOrders,
+    todayRevenueAgg,
+    pendingOrdersCount,
+    lowStockCount
+  ] = await Promise.all([
     prisma.product.count({ where: { vendorId, isDeleted: false } }),
     prisma.vendorEarning.aggregate({
       where: { vendorId },
@@ -128,7 +147,70 @@ export const getVendorDashboardService = async (vendorId: string) => {
     prisma.payoutRequest.count({
       where: { vendorId, status: "PENDING" },
     }),
+    prisma.order.count({
+      where: {
+        items: { some: { product: { vendorId } } },
+      },
+    }),
+    prisma.vendor.findUnique({
+      where: { id: vendorId },
+      select: { commissionRate: true, status: true },
+    }),
+    prisma.order.findMany({
+      where: {
+        items: { some: { product: { vendorId } } },
+      },
+      select: {
+        id: true,
+        orderStatus: true,
+        total: true,
+        createdAt: true,
+        user: { select: { fullName: true, email: true } },
+        items: {
+          where: { product: { vendorId } },
+          select: {
+            quantity: true,
+            price: true,
+            product: { select: { name: true, images: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 5,
+    }),
+    prisma.orderItem.findMany({
+      where: {
+        product: { vendorId },
+        order: { createdAt: { gte: startOfToday } }
+      },
+      select: { price: true, quantity: true }
+    }),
+    prisma.order.count({
+      where: {
+        items: { some: { product: { vendorId } } },
+        orderStatus: "pending"
+      }
+    }),
+    prisma.stock.count({
+      where: {
+        variant: { product: { vendorId } },
+        quantity: { lte: 5 } // simplified threshold
+      }
+    }),
   ]);
+
+  const serializedOrders = recentOrders.map((o) => ({
+    id: o.id,
+    status: o.orderStatus,
+    total: Number(o.total),
+    createdAt: o.createdAt,
+    customerName: o.user?.fullName || "Guest",
+    items: o.items.map((i) => ({
+      productName: i.product?.name || "Product",
+      quantity: i.quantity,
+      price: Number(i.price),
+    })),
+  }));
 
   return {
     statusCode: 200,
@@ -136,8 +218,15 @@ export const getVendorDashboardService = async (vendorId: string) => {
     message: "Vendor dashboard stats fetched",
     data: {
       totalProducts,
-      totalEarnings: totalEarnings._sum.netAmount || 0,
+      totalEarnings: Number(totalEarningsAgg._sum.netAmount || 0),
+      todayRevenue: todayRevenueAgg.reduce((sum: number, item: any) => sum + (item.price * item.quantity), 0),
       pendingPayouts,
+      totalOrders,
+      pendingOrders: pendingOrdersCount,
+      lowStockItems: lowStockCount,
+      commissionRate: Number(vendor?.commissionRate || 10),
+      status: vendor?.status || "ACTIVE",
+      recentOrders: serializedOrders,
     },
   };
 };
@@ -204,7 +293,7 @@ export const approveVendorService = async (vendorId: string) => {
   // Notify vendor via email
   try {
     await mailTransporter.sendMail({
-      from: process.env.MAIL_FROM,
+      from: process.env.MAIL_FROM || process.env.MAIL_USER,
       to: vendor.user.email,
       subject: "🎉 Your Vendor Application has been Approved! - LuxaCart",
       html: `
@@ -234,6 +323,7 @@ export const approveVendorService = async (vendorId: string) => {
 export const suspendVendorService = async (vendorId: string) => {
   const vendor = await prisma.vendor.findUnique({
     where: { id: vendorId },
+    include: { user: true },
   });
 
   if (!vendor) {
@@ -244,6 +334,26 @@ export const suspendVendorService = async (vendorId: string) => {
     where: { id: vendorId },
     data: { status: "SUSPENDED" },
   });
+
+  // Notify vendor via email
+  try {
+    await mailTransporter.sendMail({
+      from: process.env.MAIL_FROM || process.env.MAIL_USER,
+      to: vendor.user.email,
+      subject: "⚠️ Your Vendor Account has been Suspended - LuxaCart",
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <h2 style="color: #ff0000;">Account Suspended</h2>
+          <p>Hello ${vendor.user.fullName},</p>
+          <p>Your vendor account for <strong>${vendor.businessName}</strong> has been <span style="color: #ff0000; font-weight: bold;">SUSPENDED</span>.</p>
+          <p>You will no longer be able to access your vendor dashboard or receive new orders.</p>
+          <p>If you believe this is a mistake, please contact our support team.</p>
+        </div>
+      `,
+    });
+  } catch (emailError) {
+    console.error("Failed to send vendor suspension email:", emailError);
+  }
 
   return {
     statusCode: 200,
@@ -263,7 +373,33 @@ export const rejectVendorService = async (vendorId: string) => {
     throw createError({ statusCode: 404, message: "Vendor not found" });
   }
 
-  await prisma.vendor.delete({ where: { id: vendorId } });
+  try {
+    await prisma.$transaction(async (tx) => {
+      // Revert user role to USER if they were a vendor
+      await tx.user.update({
+        where: { id: vendor.userId },
+        data: { role: "USER" },
+      });
+
+      // Orphan vendor's products to bypass the Vendor relation Restrict constraint
+      // without deleting OrderItems.
+      await tx.product.updateMany({
+        where: { vendorId },
+        data: { vendorId: null, isDeleted: true }
+      });
+
+      // Then delete the vendor
+      await tx.vendor.delete({ where: { id: vendorId } });
+    });
+  } catch (error: any) {
+    if (error.code === "P2003") {
+      throw createError({
+        statusCode: 400,
+        message: "Cannot delete vendor because they have existing orders or dependencies in the system.",
+      });
+    }
+    throw error;
+  }
 
   // Notify vendor
   try {
@@ -272,20 +408,20 @@ export const rejectVendorService = async (vendorId: string) => {
     });
     if (user) {
       await mailTransporter.sendMail({
-        from: process.env.MAIL_FROM,
+        from: process.env.MAIL_FROM || process.env.MAIL_USER,
         to: user.email,
-        subject: "Vendor Application Update - LuxaCart",
+        subject: "Vendor Account Deleted - LuxaCart",
         html: `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
             <h2 style="color: #002147;">Hello, ${user.fullName}</h2>
-            <p>Unfortunately, your vendor application for <strong>${vendor.businessName}</strong> has been rejected.</p>
+            <p>Your vendor account for <strong>${vendor.businessName}</strong> has been deleted by an administrator.</p>
             <p>If you believe this is an error, please contact our support team.</p>
           </div>
         `,
       });
     }
   } catch (emailError) {
-    console.error("Failed to send vendor rejection email:", emailError);
+    console.error("Failed to send vendor deletion email:", emailError);
   }
 
   return {
@@ -455,7 +591,7 @@ export const getVendorProductsService = async (userId: string) => {
   if (!vendor) throw createError({ statusCode: 404, message: "Vendor profile not found" });
 
   const products = await prisma.product.findMany({
-    where: { 
+    where: {
       vendorId: vendor.id,
       isDeleted: false
     },
@@ -498,6 +634,7 @@ export const updateVendorProfileService = async (userId: string, updateData: any
       businessName: businessName !== undefined ? businessName : undefined,
       description: description !== undefined ? description : undefined,
       logo: logo !== undefined ? logo : undefined,
+      address: address !== undefined ? address : undefined,
       bankDetails: bankDetails !== undefined ? bankDetails : undefined,
     }
   });
@@ -589,11 +726,85 @@ export const getVendorAnalyticsService = async (vendorId: string) => {
     earnings: Number(monthlyData[name].toFixed(2))
   }));
 
+  // 1. Weekly Revenue (Last 7 days)
+  const sevenDaysAgo = new Date();
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+  sevenDaysAgo.setHours(0, 0, 0, 0);
+
+  const weeklyOrders = await prisma.order.findMany({
+    where: {
+      createdAt: { gte: sevenDaysAgo },
+      items: { some: { product: { vendorId } } }
+    },
+    select: { createdAt: true, total: true }
+  });
+
+  const weeklyData: Record<string, number> = {};
+  const weekDays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    weeklyData[weekDays[d.getDay()]] = 0;
+  }
+  let totalWeeklyRevenue = 0;
+  weeklyOrders.forEach(o => {
+    const day = weekDays[new Date(o.createdAt).getDay()];
+    if (weeklyData[day] !== undefined) {
+      weeklyData[day] += Number(o.total);
+      totalWeeklyRevenue += Number(o.total);
+    }
+  });
+  const revenueGrowth = Object.keys(weeklyData).map(name => ({
+    name, revenue: weeklyData[name]
+  }));
+
+  // 2. Earnings vs Fees
+  const earningsAgg = await prisma.vendorEarning.aggregate({
+    where: { vendorId },
+    _sum: { netAmount: true, commissionAmount: true, grossAmount: true }
+  });
+  const netEarnings = Number(earningsAgg._sum.netAmount || 0);
+  const commission = Number(earningsAgg._sum.commissionAmount || 0);
+  
+  const totalAgg = netEarnings + commission || 1; // avoid divide by zero
+  const breakdownData = [
+    { name: "Net Earnings", value: Math.round((netEarnings / totalAgg) * 100) || 0, color: "#002147" },
+    { name: "Commission", value: Math.round((commission / totalAgg) * 100) || 0, color: "#eb9a05" },
+    { name: "Fees", value: 0, color: "#cbd5e1" },
+  ];
+
+  // 3. Top Products
+  const topProductsRaw = await prisma.orderItem.groupBy({
+    by: ['productId'],
+    where: { product: { vendorId } },
+    _sum: { quantity: true },
+    orderBy: { _sum: { quantity: 'desc' } },
+    take: 5
+  });
+
+  const productIds = topProductsRaw.map(p => p.productId);
+  const products = await prisma.product.findMany({
+    where: { id: { in: productIds } },
+    select: { id: true, name: true }
+  });
+  const productMap = Object.fromEntries(products.map(p => [p.id, p.name]));
+
+  const topProductsData = topProductsRaw.map(p => ({
+    name: productMap[p.productId]?.substring(0, 18) || "Product",
+    sales: p._sum.quantity || 0
+  }));
+
   return {
     statusCode: 200,
     success: true,
     message: "Vendor analytics fetched",
-    data: { chartData }
+    data: { 
+      chartData,
+      revenueGrowth,
+      totalWeeklyRevenue,
+      breakdownData,
+      topProductsData
+    }
   };
 };
 

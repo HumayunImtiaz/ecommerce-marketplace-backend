@@ -397,7 +397,13 @@ export const getAllOrdersService = async (): Promise<ServiceResponse> => {
     const orders = await prisma.order.findMany({
       include: {
         user: { select: { fullName: true, email: true } },
-        items: true,
+        items: {
+          include: {
+            product: {
+              include: { vendor: { include: { user: true } } }
+            }
+          }
+        },
         addresses: true,
       },
       orderBy: { createdAt: "desc" },
@@ -420,7 +426,13 @@ export const getOrderByIdService = async (orderId: string): Promise<ServiceRespo
       where: { id: orderId },
       include: {
         user: { select: { fullName: true, email: true, phone: true } },
-        items: true,
+        items: {
+          include: {
+            product: {
+              include: { vendor: { include: { user: true } } }
+            }
+          }
+        },
         addresses: true,
       },
     });

@@ -1,6 +1,5 @@
 generator client {
-  provider   = "prisma-client-js"
-  engineType = "binary"
+  provider = "prisma-client-js"
 }
 
 datasource db {
@@ -109,6 +108,7 @@ model Vendor {
   slug           String          @unique
   logo           String?
   description    String?
+  address        String?
   status         VendorStatus    @default(PENDING)
   commissionRate Decimal         @default(10.0)
   bankDetails    Json?
@@ -121,34 +121,34 @@ model Vendor {
 }
 
 model Product {
-  id            String         @id @default(uuid())
-  name          String
-  slug          String         @unique
-  description   String?
-  price         Float
-  comparePrice  Float?
-  sku           String         @unique
-  categoryId    String?
-  vendorId      String?
-  tags          String[]
-  images        String[]
-  features      String[]
-  isActive      Boolean        @default(true)
-  isFeatured    Boolean        @default(false)
-  productStatus ProductStatus @default(APPROVED)
+  id              String         @id @default(uuid())
+  name            String
+  slug            String         @unique
+  description     String?
+  price           Float
+  comparePrice    Float?
+  sku             String         @unique
+  categoryId      String?
+  vendorId        String?
+  tags            String[]
+  images          String[]
+  features        String[]
+  isActive        Boolean        @default(true)
+  isFeatured      Boolean        @default(false)
+  productStatus   ProductStatus  @default(APPROVED)
   rejectionReason String?
-  avgRating     Float          @default(0)
-  reviewCount   Int            @default(0)
-  isDeleted     Boolean        @default(false)
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
-  cartItems     CartItem[]
-  orderItems    OrderItem[]
-  category      Category?       @relation(fields: [categoryId], references: [id])
-  vendor        Vendor?        @relation(fields: [vendorId], references: [id], onDelete: Restrict)
-  reviews       Review[]
-  variants      Variant[]
-  wishlistItems WishlistItem[]
+  avgRating       Float          @default(0)
+  reviewCount     Int            @default(0)
+  isDeleted       Boolean        @default(false)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  cartItems       CartItem[]
+  orderItems      OrderItem[]
+  category        Category?      @relation(fields: [categoryId], references: [id])
+  vendor          Vendor?        @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  reviews         Review[]
+  variants        Variant[]
+  wishlistItems   WishlistItem[]
 }
 
 model Variant {

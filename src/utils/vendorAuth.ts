@@ -1,7 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { z } from "zod";
-import prisma from "../../prisma/client"; // Path assuming you have a prisma client export
-import { UserRole } from "../utils/enums/role";
+import prisma from "../config/prisma";
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 
