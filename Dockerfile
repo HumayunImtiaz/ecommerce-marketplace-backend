@@ -16,6 +16,8 @@ RUN npx prisma generate
 # Build TypeScript
 RUN npm run build
 
-EXPOSE 5000
+# Hugging Face Spaces requires port 7860
+ENV PORT=7860
+EXPOSE 7860
 
 CMD ["npm", "start"]

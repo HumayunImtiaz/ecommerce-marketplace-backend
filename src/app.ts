@@ -23,7 +23,11 @@ app.use(
       
       const normalizedOrigin = origin.replace(/\/$/, "");
       
-      if (allowedOrigins.includes(normalizedOrigin) || allowedOrigins.some(ao => normalizedOrigin.startsWith(ao))) {
+      if (
+        allowedOrigins.includes(normalizedOrigin) || 
+        allowedOrigins.some(ao => normalizedOrigin.startsWith(ao)) ||
+        normalizedOrigin.endsWith(".vercel.app") // Automatically allow Vercel frontends
+      ) {
         callback(null, true);
       } else {
         console.warn(` CORS blocked: ${origin}. Allowed:`, allowedOrigins);
