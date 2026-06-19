@@ -6,7 +6,7 @@ import app from "./app";
 import prisma from "./config/prisma";
 import { setupSocketIO } from "./socket";
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 7860;
 
 const startServer = async (): Promise<void> => {
   try {
