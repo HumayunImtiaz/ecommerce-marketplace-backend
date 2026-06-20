@@ -1,4 +1,4 @@
-import dotenv from "dotenv";
+import * as dotenv from "dotenv";
 dotenv.config();
 
 import http from "http";
@@ -14,8 +14,8 @@ const startServer = async (): Promise<void> => {
     console.log("Database connected successfully (Prisma/PostgreSQL)");
 
     const httpServer = http.createServer(app);
-    
-    
+
+
     setupSocketIO(httpServer);
 
     httpServer.listen(PORT, "0.0.0.0", () => {
