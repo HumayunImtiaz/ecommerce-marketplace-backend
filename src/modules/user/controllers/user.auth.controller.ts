@@ -1,4 +1,5 @@
 import { NextFunction, Request, Response } from "express";
+import { uploadToCloudinary } from "../../../utils/cloudinary";
 import {
   registerUserService,
   verifyEmailService,
@@ -37,7 +38,14 @@ const registerUser = async (
   next: NextFunction
 ) => {
   try {
-    const result = await registerUserService(req.body);
+    const data = { ...req.body };
+    
+    if (req.file) {
+      const uploadResult = await uploadToCloudinary(req.file.buffer, "luxacart/users");
+      data.avatar = uploadResult.secure_url;
+    }
+
+    const result = await registerUserService(data);
 
     return res.status(result.statusCode).json({
       success: result.success,
@@ -228,7 +236,8 @@ const updateUserProfile = async (
 
     const updateData = { ...req.body };
     if (req.file) {
-      updateData.avatar = req.file.filename;
+      const uploadResult = await uploadToCloudinary(req.file.buffer, "luxacart/users");
+      updateData.avatar = uploadResult.secure_url;
     }
 
     const result = await updateUserProfileService(userId.toString(), updateData);

@@ -1,4 +1,5 @@
 import { NextFunction, Request, Response } from "express";
+import { uploadToCloudinary } from "../../../utils/cloudinary";
 import {
   adminLoginService,
   getAllUsersService,
@@ -79,7 +80,8 @@ const updateAdminProfile = async (req: Request, res: Response, next: NextFunctio
     
     const updateData = { ...req.body };
     if (req.file) {
-      updateData.avatar = req.file.filename;
+      const uploadResult = await uploadToCloudinary(req.file.buffer, "luxacart/admins");
+      updateData.avatar = uploadResult.secure_url;
     }
     
     // Support both name and fullName from frontend
