@@ -7,35 +7,7 @@ type UploadedFile = {
 };
 
 export const storageData = (name: string) => {
-  const storage = multer.diskStorage({
-    destination: (
-      req: Request,
-      file: UploadedFile,
-      cb: (error: Error | null, destination: string) => void
-    ) => {
-      const uploadPath = `public/${name}`;
-
-      try {
-        fs.mkdirSync(uploadPath, { recursive: true });
-        cb(null, uploadPath);
-      } catch (err) {
-        cb(err as Error, "");
-      }
-    },
-
-    filename: (
-      req: Request,
-      file: UploadedFile,
-      cb: (error: Error | null, filename: string) => void
-    ) => {
-      const safeName =
-        typeof file.originalname === "string"
-          ? file.originalname.replace(/[^\w.]/g, "_")
-          : "file";
-
-      cb(null, `${Date.now()}-${safeName}`);
-    },
-  });
+  const storage = multer.memoryStorage();
 
   return multer({
     storage,
